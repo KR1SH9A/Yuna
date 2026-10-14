@@ -1,37 +1,43 @@
 /**
  * Planned component: ModerationContracts
- * Kind: Plain boundary contract catalogue
+ * Kind: Narrow context bindings and policy values
  * Owner: Moderation
  * Status: Design scaffold only; not implemented.
  *
- * Responsibility:
- * Describe the public serialized data boundary. Planned plain boundary types:
- * ModerationInput: trusted guild/source/author identity, untrusted content, source revision and
- * coverage.
- * ReportCommand: authenticated reporter plus source reference; reporter and accused subject remain
- * distinct.
- * EvidenceBinding: case, exact captured revision, hash and coverage.
- * Disposition: established violation, supported suspicion, allowed or incomplete, with
- * rule reasons.
- * StaffSanctionCommand: exact authenticated operation, target, source and supplied authority
- * binding.
- * CaseView: access-filtered serialized status, findings and actual effect outcomes.
- * ActionOutcome: lifecycle, operation result, attribution evidence and unresolved status.
+ * Responsibility: Keep domain bindings separate from public use-case DTOs.
  *
- * Scope:
- * Explicit kicks are optional. No strike/recurrence contract is implied by the immediate-ban
- * baseline.
+ * Planned values:
+ * - EvidenceBinding: case reference, exact retained revision, content hash and source coverage;
+ *   immutable values, never a retained evidence entity.
+ * - Disposition: established violation, supported suspicion, allowed or incomplete, with rule
+ *   reasons. Technical failure is not supported suspicion.
  *
- * Planned methods:
- * No business methods planned. These are conceptual data shapes, not runtime services,
- * declarations or implementations.
+ * DTO locations:
+ * - dto/moderation-intake.dto.ts owns message/report/revision arguments and ModerationCaseDto
+ *   progress.
+ * - dto/staff-sanction.dto.ts owns exact staff ban/kick/unban arguments and
+ *   StaffSanctionResultDto.
+ * - dto/action-outcome.dto.ts owns serialized effect outcomes and bounded recovery summaries.
  *
- * Collaborators/Boundaries:
- * Public inputs for intake and exact staff sanctions; serialized results
- * for handlers. AI task schemas stay in the AI contracts boundary.
+ * Trusted and infrastructure values: Reuse TrustedCallerContext, StaffRequestAuthority and
+ * PolicyAuthority from Administration contracts; do not redefine identity or authority here. Bot
+ * ingress maps verified transport metadata to TrustedCallerContext separately from validated
+ * feature arguments. SourceProvenance and DiscordOperationResult remain plain Discord
+ * boundary contracts. Internal AI continuations reuse Jobs StoredResultReference/acceptance
+ * bindings and AI task schemas.
  *
- * Invariants:
- * Source attribution determines targets. Supported suspicion and technical failure are different
- * outcomes. No worker-supplied IDs can replace the persisted guild, owner, target or authority. No
- * generic execute-any-action contract.
+ * Scope: Explicit kicks remain optional. No strike/recurrence contract is implied by the
+ * immediate-ban baseline.
+ *
+ * Planned methods: No business methods planned. These are plain context values and references to
+ * the owning DTO catalogues; validation/query behavior belongs at its stated boundary.
+ *
+ * Collaborators/Boundaries: Services consume plain caller/source values and feature DTOs, never
+ * bot app types, Discord SDK objects, another context's ORM entities or provider clients. Public
+ * DTO definitions live only in dto files; no mirrored request/response definitions remain here.
+ *
+ * Invariants: Source attribution determines targets. DTO structure validation is not identity
+ * verification or permission. A worker result cannot replace persisted guild, owner, target or
+ * authority. Moderation entities/repositories remain private; there is no generic
+ * execute-any-action contract.
  */

@@ -8,8 +8,9 @@
  * Route a durable AI result to the context that requested it.
  *
  * Planned methods:
- * - onTaskCompleted: Accept a task ID, load stored ownership and kind metadata, then invoke that
- *   context's named result-acceptance method.
+ * - onTaskCompleted: Validate TaskSignalDto; use TaskService.readTaskDescriptor to resolve stored
+ *   ownership, guild and kind/version; then invoke the known exported owner acceptance service.
+ *   TaskService.readStoredResult supplies StoredResultReference under that stored guild binding.
  *
  * Planned routes:
  * Moderation observation -> ModerationService.acceptObservationResult. Moderation assessment ->

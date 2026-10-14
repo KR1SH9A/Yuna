@@ -12,6 +12,12 @@
  * the Jobs-owned entities. Bot and worker roots select their permitted providers and database
  * credentials; the module does not choose business handlers.
  *
+ * Public provider surfaces:
+ * Bot composition receives TaskService, TaskRecoveryService and OutboxRelay. Worker composition
+ * receives the restricted WorkerTaskStore surface with restricted credentials; it cannot resolve
+ * the privileged bot mutation API merely because both roles use this module's source directory.
+ * Records and ORM repositories stay private. DTOs/contracts are plain imports, not providers.
+ *
  * Boundaries/invariants:
  * No business-context entities, Discord operations or provider SDKs are imported here. Task
  * signals carry IDs; task identity and routing come from persisted metadata. The outbox remains

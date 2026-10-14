@@ -13,19 +13,26 @@
  * remains available when governance is disabled.
  *
  * Planned methods:
- * - proposePlan: Input: authenticated proposer and bounded exact operations/scope/expiry. Output:
- *   immutable hashed plan; store intended values rather than arbitrary executable payloads.
- * - approvePlan: Input: exact plan/hash and verified eligible approver. Output: approval or
- *   rejection; exclude requester/candidate and preserve distinct current approvals.
+ * - proposePlan: Input: ProposePlanRequestDto plus separate TrustedCallerContext and current
+ *   authority. Output: GovernancePlanResponseDto mapped from an immutable hashed plan; store
+ *   bounded intended values rather than arbitrary executable payloads.
+ * - approvePlan: Input: ApprovePlanRequestDto plus separate TrustedCallerContext and verified
+ *   approver eligibility. Output: GovernancePlanResponseDto or rejection; exclude
+ *   requester/candidate and preserve distinct current approvals.
  * - consumeApproval: Input: exact plan/hash/scope, current authority and caller transaction.
  *   Output: one-time approved operation binding or denial. Revalidate eligibility/expiry and
  *   consume atomically with the owning operation when required.
- * - enrollCustodian: Input: exact candidate, candidate acceptance and required eligible governance
- *   authority. Output: completed enrollment/grant or pending/rejected status.
+ * - enrollCustodian: Input: EnrollCustodianRequestDto plus separate TrustedCallerContext,
+ *   VerifiedCandidateAcceptance and required current eligible governance authority. Output:
+ *   CustodianEnrollmentResponseDto mapped from completed enrollment/grant or pending/rejected
+ *   status; an enrollment request cannot assert someone else's acceptance.
  *
  * Collaborators/Boundaries:
- * Use Administration-owned records and infrastructure only. Current Discord facts arrive through
- * narrow contracts. Do not import another business context; composition-root handlers route
+ * Own native MikroORM queries/persistence for Administration plans, approvals, enrollments and
+ * grants; no custom repository layer is implied. Staged interaction DTOs live in
+ * dto/governance.dto.ts; consumeApproval retains its internal ApprovedPlanBinding. Current
+ * Discord facts arrive through narrow verified contracts. Do not import another business
+ * context; composition-root handlers route
  * approved operations to their feature owner. Nested mutations join the caller transaction.
  *
  * Invariants:

@@ -9,23 +9,28 @@
  * and maintain baseline grant revocation.
  *
  * Planned methods:
- * - evaluateStaffRequest: Input: authenticated actor/source, exact operation/target, scoped grant
- *   and current Discord facts. Output: allowed/denied evaluation, reasons and revision binding;
+ * - evaluateStaffRequest: Input: separate TrustedCallerContext, exact operation/target, scoped
+ *   grant and verified current Discord facts. Output: AuthorityEvaluation with allowed/denied
+ *   decision, reasons and revision binding;
  *   require current native permission and target eligibility.
  * - evaluatePolicyAuthority: Input: trusted enabled policy values, accepted decision/evidence
  *   binding, exact target and current Discord facts. Output: current policy-authority evaluation.
  *   The offender is the target, not the actor supplying permission.
  * - validateGrantRevision: Input: guild/principal/operation and expected grant revision in the
  *   caller transaction. Output: current validity or stale/revoked/expired denial.
- * - revokeGrant: Input: authorized revocation, grant and expected authority revision. Output:
- *   revoked grant and updated binding. Invalidate affected undispatched work through
- *   owner-controlled mechanisms in the same local transaction where required. This baseline
+ * - revokeGrant: Input: RevokeGrantRequestDto plus separate TrustedCallerContext and verified
+ *   current authority facts. Output: GrantRevocationResponseDto. Load and authorize the scoped
+ *   grant before revoking it and projecting the updated revision. Invalidate affected
+ *   undispatched work through owner-controlled mechanisms in the same local transaction where
+ *   required. This baseline
  *   operation is available even when optional governance is disabled; future dispatch rechecks
  *   current authority.
  *
  * Collaborators/Boundaries:
- * Use Administration-owned records and infrastructure only. Current Discord facts arrive through
- * narrow contracts. Do not import another business context; composition-root handlers route
+ * Own native MikroORM queries/persistence for Administration records; no custom repository layer
+ * is implied. Request/response DTOs live in dto/grant-revocation.dto.ts; trusted bindings remain
+ * in contracts.ts. Current Discord facts arrive through narrow verified contracts, separately
+ * from request fields. Do not import another business context; composition-root handlers route
  * approved operations to their feature owner. Nested mutations join the caller transaction.
  *
  * Invariants:

@@ -8,6 +8,10 @@
  * Give workers only the prepared input and conditional writes needed for one attempt.
  *
  * Planned methods:
+ * - readTaskDescriptor: authorized worker consumer and task ID -> minimal TaskDescriptor or
+ *   absence. Expose stored kind/schema version and bounded routing metadata before handler
+ *   selection and compatibility checks, without creating an attempt or disclosing prepared input.
+ *   claimTask and releasePreparedInput still enforce current execution/eligibility gates.
  * - claimTask: task ID and executor identity -> eligible claim with attempt generation, lease and
  *   task configuration, or no claim. Atomically reject unavailable work; do not disclose the
  *   prepared payload merely because a queue message was received.

@@ -6,8 +6,16 @@
  *
  * Responsibility:
  * Register MemoryService and MemoryPolicy with private MemoryScope, MemoryFact, FactEmbedding and
- * MemoryDeletionRequest persistence. Export only scoped memory operations and disclosure
- * validation.
+ * MemoryDeletionRequest persistence.
+ *
+ * Planned exports:
+ * MemoryService only, including its scoped operations and disclosure validation. DTO catalogues
+ * and plain contracts describe its boundary; they do not register runtime providers.
+ *
+ * Private registrations:
+ * MemoryPolicy and all four records with their native MikroORM repositories. Keep queries and
+ * persistence inside MemoryService; do not export entities, repositories, EntityManager or the
+ * policy implementation.
  *
  * Scope:
  * Staged feature: activate when personal-memory retrieval ships. No runtime memory feature is

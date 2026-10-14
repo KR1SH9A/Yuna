@@ -12,19 +12,23 @@
  * silently be reduced.
  *
  * Planned methods:
- * - pauseGuild: Input: verified independent pause request and reason. Output: paused
- *   state/revision. Lock the shared row, advance revision and invalidate affected pending work
+ * - pauseGuild: Input: PauseGuildRequestDto plus separate TrustedCallerContext and verified
+ *   current authority. Output: GuildSafetyResponseDto. Lock the shared row, advance revision
+ *   and invalidate affected pending work
  *   without a model.
- * - resumeGuild: Input: reviewed current configuration and required current
- *   authorization/approvals. Output: resumed state with another revision. Old ready intents
+ * - resumeGuild: Input: ResumeGuildRequestDto plus separate TrustedCallerContext, reviewed
+ *   current configuration and verified required current authorization/approvals. Output:
+ *   GuildSafetyResponseDto with another revision. Old ready intents
  *   require deliberate revalidation or replacement.
  * - lockAndReadGate: Input: guild and caller active short transaction. Output: locked current
  *   safety snapshot retained through the atomic admission/dispatch claim; follow the documented
  *   lock order.
  *
  * Collaborators/Boundaries:
- * Use Administration-owned records and infrastructure only. Current Discord facts arrive through
- * narrow contracts. Do not import another business context; composition-root handlers route
+ * Own native MikroORM queries/persistence for Administration safety records; no custom
+ * repository wrapper is implied. Interaction DTOs live in dto/guild-safety.dto.ts; lockAndReadGate
+ * returns the internal SafetyGate from contracts.ts. Current Discord facts arrive through
+ * narrow verified contracts. Do not import another business context; composition-root handlers route
  * approved operations to their feature owner. Nested mutations join the caller transaction.
  *
  * Invariants:

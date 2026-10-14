@@ -9,9 +9,13 @@
  * acceptance acknowledgments, invalidation and delivery signals.
  *
  * Planned methods:
- * None. Future types describe TaskRegistration, TaskClaim, PreparedInputRelease,
- * StoredResultReference, AcceptanceBinding, WorkInvalidation and TaskSignal. Capability-specific
- * payload/result schemas remain under AI contracts.
+ * None. Future types describe TaskDescriptor, TaskRegistration, TaskClaim, PreparedInputRelease,
+ * StoredResultReference, AcceptanceBinding and WorkInvalidation. The queue-facing TaskSignalDto
+ * is defined in dto/task-signal.dto.ts. Capability-specific payload/result schemas remain under
+ * src/ai/contracts; do not duplicate them as entity-shaped DTOs.
+ * TaskDescriptor is the minimal stored routing view: task ID, guild, owner, operation/workflow
+ * reference, kind/schema version and deadline. It contains no input/result payload, artifact
+ * handles or credentials, and grants neither a claim nor permission to accept a result.
  *
  * Planned fields:
  * Trusted guild, owner, workflow and stage; current expected task identity; task/attempt

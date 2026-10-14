@@ -12,34 +12,41 @@
  * Staged feature: activate only when debate mode ships.
  *
  * Planned methods:
- * - proposeSession: Input: authenticated initiator, participants/topic, limits, visibility and
- *   rubric. Output: proposed session plus exact consent scope; publish processing/retention
- *   expectations.
- * - recordConsent: Input: authenticated participant and accept/withdraw decision for the exact
- *   session scope. Output: recorded consent and session progress; withdrawal follows the declared
+ * - proposeSession: Input: ProposeDebateSessionRequestDto plus separate TrustedCallerContext.
+ *   Output: DebateSessionResponseDto with the proposed session and exact consent scope;
+ *   publish processing/retention expectations.
+ * - recordConsent: Input: RecordDebateConsentRequestDto plus separate TrustedCallerContext for
+ *   the participant. Output: DebateSessionResponseDto with permitted consent/session progress;
+ *   withdrawal follows the declared
  *   policy and invalidates affected pending work.
- * - startSession: Input: session reference and verified current required consent. Output: active
- *   session with fixed scope/rubric binding; reject missing or stale consent.
- * - appendEntry: Input: attributable source content/revision and ordered session position. Output:
+ * - startSession: Input: owner-resolved session reference and verified current required consent.
+ *   Output: active session with fixed scope/rubric binding; map DebateSessionResponseDto if
+ *   returning progress to an authorized interaction. Reject missing or stale consent.
+ * - appendEntry: Input: internal TranscriptSourceInput and ordered session position. Output:
  *   stored transcript entry with edit/deletion/gap markers. Keep the complete declared transcript,
  *   separate from conversation pruning.
  * - freezeTranscript: Input: active session and declared endpoint/coverage. Output: immutable
  *   snapshot hash/revision and frozen rubric binding. Record missing coverage explicitly.
- * - requestEvaluation: Input: frozen session/transcript/rubric binding. Output: bounded evaluation
+ * - requestEvaluation: Input: owner-frozen session/transcript/rubric values. Output: bounded evaluation
  *   task references and reservations. Preserve original and reversed-speaker comparison where
  *   required by the selected evaluation policy.
  * - acceptEvaluation: Input: stored expected task results. Output: accepted criterion findings,
  *   evidence-checked deterministic totals and outcome, or rejection/uncertainty. Accept once under
  *   the frozen binding.
  * - publishResult: Input: accepted evaluation and current authorized audience/session state.
- *   Output: publication outcome or tracked unresolved delivery. Verify actual references and
+ *   Output: authorized DebateResultResponseDto and publication outcome or tracked unresolved
+ *   delivery. Map outward content from accepted owner records, verify actual references and
  *   current destination before sending outside transactions.
- * - cancelSession: Input: authenticated cancellation/consent cause and expected revision. Output:
- *   canceled state plus pending task/publication invalidation, retaining required minimal audit
- *   references.
+ * - cancelSession: Input: CancelDebateSessionRequestDto plus separate TrustedCallerContext for
+ *   human cancellation, or an owner-verified internal consent cause and expected revision.
+ *   Output: DebateSessionResponseDto for the interaction, or internal cancellation progress.
+ *   Invalidate pending task/publication work while retaining required minimal audit references.
  *
  * Collaborators/Boundaries:
- * Use Debates-owned repositories, DebateScoringPolicy, Administration public APIs, Jobs, Usage,
+ * Own native MikroORM queries/persistence for Debates records; no custom repository wrapper is
+ * implied. Map outward DTOs from dto/ only after owner authorization. Transcript intake and
+ * result acceptance retain their internal contracts. Use DebateScoringPolicy, Administration
+ * public APIs, Jobs, Usage,
  * Artifacts, Audit and narrow Discord contracts. Attributable conduct can independently enter
  * Moderation public intake; no score is a conduct finding. Do not import Community or Memory
  * entities/provider implementations.

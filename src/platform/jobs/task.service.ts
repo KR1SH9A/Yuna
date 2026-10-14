@@ -8,6 +8,10 @@
  * Maintain technical work records while the calling context owns workflow progression.
  *
  * Planned methods:
+ * - readTaskDescriptor: trusted bot consumer and task ID -> TaskDescriptor or absence. Return
+ *   stored guild, owner, operation/workflow reference, kind/schema version and deadline so
+ *   CompletionHandlers can select the known owner before reading its result. No input/result
+ *   payload, artifact access or business entity is returned; this read is not acceptance.
  * - registerTask: trusted registration and prepared input -> task reference. Persist immutable
  *   binding, eligible work and outbox signal in the caller's transaction.
  * - readStoredResult: trusted guild, task and optional result identity -> stored bound result view

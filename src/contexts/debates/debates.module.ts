@@ -6,8 +6,16 @@
  *
  * Responsibility:
  * Register DebateService and DebateScoringPolicy with private DebateSession, ParticipantConsent,
- * TranscriptEntry, TranscriptSnapshot, RubricRevision and DebateEvaluation persistence. Export
- * DebateService.
+ * TranscriptEntry, TranscriptSnapshot, RubricRevision and DebateEvaluation persistence.
+ *
+ * Planned exports:
+ * DebateService only. DTO catalogues and plain contracts describe its boundary without
+ * registering runtime providers.
+ *
+ * Private registrations:
+ * DebateScoringPolicy and all six records with their native MikroORM repositories. Keep queries
+ * and persistence inside DebateService; do not export records, repositories, EntityManager or
+ * the scoring implementation.
  *
  * Scope:
  * Staged feature: activate when consented debate mode ships. The dedicated slash-command family

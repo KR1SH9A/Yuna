@@ -10,8 +10,10 @@
  * Planned methods:
  * - None. Dependency registration only when implemented.
  *
- * Public components:
- * DiscordInputNormalizer, DiscordStateReader, DiscordActions and plain contracts.
+ * Public provider exports:
+ * DiscordInputNormalizer, DiscordStateReader and DiscordActions for bot/feature adapters.
+ * DTOs under dto/ and read/effect values in contracts.ts are plain data imports, not DI providers.
+ * The SDK connection/client remains private to this integration.
  *
  * Boundaries:
  * No business-context imports or repositories. Inbound handlers that call contexts live in

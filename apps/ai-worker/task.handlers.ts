@@ -16,10 +16,13 @@
  * - handleEmbedding: Receive a task ID; run EmbeddingService.embedTexts when enabled.
  *
  * Shared execution steps:
- * Claim work, validate schema/deadline, pass the prepared-input release gate, use the task's
+ * Validate TaskSignalDto; read stored metadata through WorkerTaskStore.readTaskDescriptor, then
+ * resolve the known handler through the static registry before creating a provider attempt.
+ * Claim work, check deadline, pass the prepared-input release gate and validate the released
+ * capability payload against its stored schema version. Use the task's
  * existing reservation for the first attempt, perform inference outside a transaction, and record
- * usage plus a conditional result under the active attempt generation. Reserve additional bounded
- * retry allowance only when needed; restricted worker operations use the stored policy/limits
+ * usage plus a schema-validated conditional result under the active attempt generation. Reserve
+ * additional bounded retry allowance only when needed; restricted worker operations use stored policy/limits
  * rather than a worker-selected budget. Never reserve the first attempt twice.
  *
  * Boundaries:

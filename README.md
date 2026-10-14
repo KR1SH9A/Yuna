@@ -4,7 +4,9 @@ Yuna is a planned Discord assistant for conversation, server help, moderation, a
 
 **Current state: a design scaffold.** Every TypeScript file contains comments describing a planned component and its methods. There are no implemented classes, imports, interfaces, decorators, runtime configuration, dependencies or executable tests. This workspace cannot be built or started yet.
 
-Start with the [repository map](docs/REPOSITORY_MAP.md) for the complete directory tree and each file's method inventory. The [technical blueprint](docs/TECHNICAL_BLUEPRINT.md) explains ownership, workflows, entity models and failure handling.
+Start with the [architecture plan](docs/ARCHITECTURE_PLAN.md) for proposed ownership, durable intake, task lifecycle, configuration, cleanup and implementation order. Use the [data model reference](docs/DATA_MODEL_REFERENCE.md) to look up every existing entity concept and the proposed additions. Both distinguish the current scaffold from planned changes.
+
+The [DTO and module reference](docs/DTO_REFERENCE.md) maps request/response DTOs to their owning services, explains trusted caller context, and lists each module's public providers. The scaffold now gives concrete DTOs their own files under the relevant feature's `dto/` directory.
 
 ## Layout
 
@@ -18,16 +20,20 @@ Start with the [repository map](docs/REPOSITORY_MAP.md) for the complete directo
 | `src/contexts/memory` | Personal consent, facts, permitted retrieval and deletion. |
 | `src/contexts/debates` | Participation, transcripts, rubric evaluation and publication. |
 | `src/ai` | Plain capability contracts and separate LLM/Jev/embedding integrations. |
-| `src/discord` | Normalization, reads and effects, independent of business contexts. |
+| `src/discord` | Normalized event/context DTOs, reads and effects, independent of business contexts. |
 | `src/platform` | Database boundaries, durable jobs, usage accounting, artifacts and audit. |
 | `tests` | Written plans for future boundary, integration and scenario checks. |
-| `docs` | Architecture, repository inventory and future decision records. |
+| `docs` | Architecture plan, entity lookup, DTO/module reference and future decision records. |
 
 ## How to read a placeholder
 
 Each TypeScript file names its planned component, role and owner, then describes its responsibility, methods and boundaries. Entity files also identify important fields. Immutable records and wiring modules explicitly have no business mutation methods.
 
 Services coordinate I/O and workflows. Policies evaluate supplied values. Entities protect their local state transitions. Adapters communicate with external systems. A service does not need to exist for every entity.
+
+Within a feature, `dto/` holds named use-case inputs and serialized outputs; `contracts.ts` holds trusted bindings and shared domain values; `entities/` holds private persistence records. Related DTOs share a use-case file. DTOs describe fields and validation, not database tables or business methods. Feature services use native ORM repositories/query APIs in the caller's transaction; custom repositories are introduced only for concrete queries that warrant them.
+
+Discord handlers fill the transport/controller role. They validate feature arguments and separately supply verified caller identity. Module files name the services other modules may inject; policies, entity registrations and repositories stay private. DTO and schema files are plain imports rather than injectable services.
 
 The scaffold reserves all five business contexts; it does not commit them all to the first release. Optional governance and kick behavior are marked in their files. Memory and Debates are staged features. Add future features through a clear owner, narrow contracts and ordinary application composition; create new files when a concrete feature needs them.
 

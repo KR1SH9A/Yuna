@@ -8,6 +8,10 @@
  * Control registration, suspension and removal while each owner cleans its own data.
  *
  * Planned methods:
+ * - readInstallation: Input: verified guild/source identity. Output: minimal InstallationView
+ *   including current state and installationGeneration, or absence. Bot ingress uses this owner
+ *   read to prepare TrustedCallerContext; it does not query private installation records. The
+ *   read grants no authority, and operations revalidate current installation at admission/dispatch.
  * - registerGuild: Input: authenticated installation/current owner facts and configuration.
  *   Output: fresh or explicitly reactivated installation generation; protected actions require
  *   verified bootstrap.
@@ -19,8 +23,12 @@
  *   removed status and minimal retained invalidation metadata.
  *
  * Collaborators/Boundaries:
- * Use Administration-owned records and infrastructure only. Current Discord facts arrive through
- * narrow contracts. Do not import another business context; composition-root handlers route
+ * Own native MikroORM queries/persistence for Administration installation records; no custom
+ * repository wrapper is implied. These lifecycle methods consume trusted installation/platform
+ * events, verified caller bindings or owner cleanup acknowledgments and produce InstallationView
+ * or internal cleanup values from contracts.ts. They do not gain external request DTOs merely
+ * for having arguments. Current Discord facts arrive through narrow verified contracts.
+ * Do not import another business context; composition-root handlers route
  * approved operations to their feature owner. Nested mutations join the caller transaction.
  *
  * Invariants:
