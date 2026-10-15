@@ -8,12 +8,16 @@
  * privacy bindings remain current.
  *
  * Planned methods:
- * - prepareDelivery: Input: internally accepted reply reference, owned request and
+ * - prepareDelivery: Input: validated accepted content/hash/allowed mentions, result provenance,
+ *   owned request and
  *   ReplyAudienceBinding/disclosure values. Output: ReplyDeliveryOutcomeDto describing the
- *   deduplicated READY intent; recording intent is not delivery.
+ *   deduplicated READY intent. Copy content and the discriminated channel-message or
+ *   interaction-original destination locally in the acceptance transaction; no Jobs payload is
+ *   required afterward. Recording intent is not delivery.
  * - dispatch: Input: trusted delivery reference. Output: ReplyDeliveryOutcomeDto. Obtain current
  *   destination/source facts outside the transaction; claim after request/safety/audience checks
- *   and optional MemoryService.validateDisclosureBinding, then send after commit.
+ *   and optional MemoryService.validateDisclosureBinding, then send after commit. Enter outside
+ *   an active transaction; record the observed response in a separate short transaction.
  * - recordOutcome: Input: matching owned attempt generation plus normalized
  *   DiscordOperationResult/message evidence. Output: ReplyDeliveryOutcomeDto. Mark delivered only
  *   after established evidence; preserve definitive failure or unresolved status.
@@ -26,9 +30,10 @@
  *   sends.
  *
  * Collaborators/Boundaries: Use owner-controlled MikroORM queries, Administration public APIs,
- * optional Memory public APIs, Jobs, Usage, Audit and narrow Discord contracts. Never import
- * another context entity or provider SDK. Nested operations join the caller transaction; external
- * calls occur outside transactions.
+ * optional Memory public APIs, Audit and narrow Discord contracts. Never import another context
+ * entity or provider SDK. prepareDelivery and recordOutcome join the caller transaction or open
+ * one short transaction; dispatch, reconcile and recovery enter outside an active transaction and
+ * coordinate external I/O around short local transactions.
  *
  * DTO ownership: Serialized outputs are defined in dto/reply-delivery.dto.ts. Internal
  * preparation, adapter results and recovery criteria remain narrow plain values; no request DTO
@@ -42,4 +47,9 @@
  * Invariants: Call Memory public validation inside the delivery-claim transaction; never read
  * Memory entities. An old consent snapshot cannot authorize disclosure. Cancellation cannot recall
  * a reply past the dispatch gate; missing message ID does not justify a blind duplicate send.
+ * Channel nonce enforcement supports only Discord's unspecified recent author-scoped window.
+ * Interaction delivery edits the deferred original response before token expiry, preserving its
+ * initial visibility. Expiry or a deleted reply target never authorizes public/destination fallback.
+ * Secrets remain short-lived delivery references, never Jobs, audit or log payloads. An UNKNOWN
+ * send still requires reconciliation after its deadline; the deadline forbids new late sends.
  */

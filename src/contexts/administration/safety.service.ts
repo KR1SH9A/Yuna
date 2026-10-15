@@ -5,7 +5,7 @@
  * Status: Design scaffold only; not implemented.
  *
  * Responsibility:
- * Own guild pause and monotonic safety revision used by effect claiming.
+ * Own installation-scoped guild pause and monotonic safety revision used by effect claiming.
  *
  * Scope:
  * Resumption approvals follow the chosen governance scope; unavailable configured quorum cannot
@@ -20,7 +20,7 @@
  *   current configuration and verified required current authorization/approvals. Output:
  *   GuildSafetyResponseDto with another revision. Old ready intents
  *   require deliberate revalidation or replacement.
- * - lockAndReadGate: Input: guild and caller active short transaction. Output: locked current
+ * - lockAndReadGate: Input: exact installationId/guildId and caller active short transaction. Output: locked current
  *   safety snapshot retained through the atomic admission/dispatch claim; follow the documented
  *   lock order.
  *

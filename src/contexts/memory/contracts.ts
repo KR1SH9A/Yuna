@@ -8,7 +8,7 @@
  * Describe trusted subject bindings and internal/shared Memory values. External requests and
  * public responses live in dto/memory-consent.dto.ts, dto/inspect-memory.dto.ts and
  * dto/forget-memory.dto.ts; do not duplicate those shapes here. Planned plain boundary types:
- * MemorySubjectScope: authenticated guild/user and purpose.
+ * MemorySubjectScope: authenticated installationId/guildId/user and purpose.
  * FactProposalAcceptance and EmbeddingAcceptance: bound stored result identity, scope,
  * source/content hash and privacy revision.
  * AudienceMemoryQuery and AuthorizedFactView: scoped purpose, destination and minimal permitted

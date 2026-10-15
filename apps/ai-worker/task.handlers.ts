@@ -12,16 +12,17 @@
  * - handleObservation: Receive a task ID; run LlmService.observeContent for its input.
  * - handleAssessment: Receive a task ID; run JevService.assessQuestions for its input.
  * - handleReplyGeneration: Receive a task ID; run LlmService.generateReply.
- * - handleExplanation: Receive a task ID; run LlmService.explainFindings when requested.
  * - handleEmbedding: Receive a task ID; run EmbeddingService.embedTexts when enabled.
  *
  * Shared execution steps:
  * Validate TaskSignalDto; read stored metadata through WorkerTaskStore.readTaskDescriptor, then
  * resolve the known handler through the static registry before creating a provider attempt.
+ * A local unsupported version must not park work that another deployed compatible worker can run.
  * Claim work, check deadline, pass the prepared-input release gate and validate the released
  * capability payload against its stored schema version. Use the task's
  * existing reservation for the first attempt, perform inference outside a transaction, and record
- * usage plus a schema-validated conditional result under the active attempt generation. Reserve
+ * usage plus a schema-validated conditional terminal result under the active attempt generation.
+ * Intermediate retryable failures finish attempts without creating owner-visible results. Reserve
  * additional bounded retry allowance only when needed; restricted worker operations use stored policy/limits
  * rather than a worker-selected budget. Never reserve the first attempt twice.
  *

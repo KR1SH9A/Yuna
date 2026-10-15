@@ -7,13 +7,21 @@
  * Responsibility: Describe the existing exact ban, optional kick and unban use cases without
  * mixing request arguments with authentication or authorization.
  *
+ * Unban admission requires an explicit request through Yuna from a current Discord administrator.
+ * Trusted internal admin proof binds source request, actor, exact target/operation and authorization
+ * observation time; public arguments cannot supply it. Recheck native administrator permissions
+ * before a new dispatch. AI results, scheduled recovery and governance cannot initiate unbans.
+ * Automatic policy bans require no staff review. Recovery may only continue an existing authorized
+ * request under current gates; it cannot invent a new unban request.
+ *
  * Scope: Ban/unban are existing operations. KickRequestDto is used only when explicit kicks are
  * released; this file does not enable that feature.
  *
  * Planned DTOs and fields:
  * - BanRequestDto (input): Exact target account reference and bounded explicit reason/options
  *   supported by the existing ban operation. No actor, grant, policy authority or inferred
- *   history-purge instruction.
+ *   history-purge instruction. Any supported explicit delete-message-seconds option is bounded by
+ *   Discord's accepted range and defaults to zero; it becomes part of the immutable action payload.
  * - KickRequestDto (input; optional scope): Exact target account reference and bounded explicit
  *   kick reason. The receiving method fixes the operation as kick.
  * - UnbanRequestDto (input): Exact persisted account reference or a case reference resolving

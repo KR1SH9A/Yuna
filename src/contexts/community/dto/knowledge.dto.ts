@@ -4,22 +4,24 @@
  * Owner: Community
  * Status: Design scaffold only; not implemented.
  *
- * Responsibility: Describe existing approve, retire and audience-visible lookup operations; an
- * approved knowledge record is not personal memory.
+ * Responsibility: Describe approval, replacement, visibility, retirement and audience-visible
+ * lookup operations; an approved knowledge record is not personal memory.
  *
  * Scope: Existing text use cases only; no additional product operations are introduced.
  *
  * Planned DTOs and fields:
- * - ApproveKnowledgeEntryDto (input): Optional entry reference for an existing revision, exact
- *   bounded content and provenance references, requested visibility and expected revision when
- *   updating an existing entry. The authenticated approver is supplied separately.
+ * - ApproveKnowledgeEntryDto (input): Exact bounded content and provenance references, requested
+ *   visibility and optional predecessor entry reference/expected rowRevision for replacement.
+ *   Approved content is never updated in place. The authenticated approver is supplied separately.
+ * - ChangeKnowledgeVisibilityDto (input): Exact entry reference, expected rowRevision and requested
+ *   audience. This does not change content or its approval metadata.
  * - RetireKnowledgeEntryDto (input): Exact entry reference, expected revision and bounded
  *   retirement reason.
  * - VisibleKnowledgeQueryDto (input): Bounded search terms/filters and result limit, with
  *   requested destination/reference sufficient for the owner to resolve audience. Caller and
  *   verified guild scope remain separate.
- * - KnowledgeEntryDto (output): Entry reference/revision, permitted approved content and
- *   provenance, visibility binding and approval/retirement metadata appropriate to the caller.
+ * - KnowledgeEntryDto (output): Entry reference, contentHash/access rowRevision, permitted approved
+ *   content and provenance, visibility binding and approval/retirement metadata for the caller.
  *   Never a live KnowledgeEntry entity.
  *
  * Runtime validation: Validate reference formats, content/search lengths, allowed visibility
@@ -31,8 +33,8 @@
  * input/output data; validation implementation and its library are not chosen.
  *
  * Receiving/returning services: KnowledgeService receives these inputs with trusted caller/source
- * values and produces KnowledgeEntryDto or a bounded list. Approval/retirement and human lookup
- * use TrustedCallerContext. Automatic reply preparation instead supplies verified source,
+ * values and produces KnowledgeEntryDto or a bounded list. Approval/visibility/retirement and
+ * human lookup use TrustedCallerContext. Automatic reply preparation supplies verified source,
  * installation and destination/audience values; it does not invent a human interaction.
  * Native owner queries perform visible
  * lookup; these DTOs contain no query execution or persistence behavior.

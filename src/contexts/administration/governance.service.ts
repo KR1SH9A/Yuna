@@ -21,7 +21,8 @@
  *   requester/candidate and preserve distinct current approvals.
  * - consumeApproval: Input: exact plan/hash/scope, current authority and caller transaction.
  *   Output: one-time approved operation binding or denial. Revalidate eligibility/expiry and
- *   consume atomically with the owning operation when required.
+ *   consume ActionPlan atomically with the owning operation when required. PlanApproval remains
+ *   approval evidence with no independent consumed flag.
  * - enrollCustodian: Input: EnrollCustodianRequestDto plus separate TrustedCallerContext,
  *   VerifiedCandidateAcceptance and required current eligible governance authority. Output:
  *   CustodianEnrollmentResponseDto mapped from completed enrollment/grant or pending/rejected

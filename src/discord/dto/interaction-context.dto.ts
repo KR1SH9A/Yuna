@@ -10,7 +10,8 @@
  * Planned fields:
  * interactionId; verified actorId; guildId/channelId when present; source kind; observedAt.
  * Guild-only operations reject a context without a verified guild rather than accepting a guild
- * ID supplied in command options. Installation generation is loaded through Administration.
+ * ID supplied in command options. Immutable installationId (UUID) and any lifecycle-generation
+ * snapshot are loaded through Administration; neither is a Discord ID or a user argument.
  *
  * Producer and consumers:
  * DiscordInputNormalizer derives this value from authenticated Discord transport metadata.

@@ -9,6 +9,10 @@
  * and maintain baseline grant revocation.
  *
  * Planned methods:
+ * - bootstrapOwner: Input: verified current guild owner and exact installation. Output: idempotent
+ *   owner enrollment/grant for this generation under the selected baseline authority policy.
+ * - grantCapability: Input: authorized grant request, exact installation/scope and verified current
+ *   authority. Output: immutable grantee/capability/scope grant with replay identity; changes replace.
  * - evaluateStaffRequest: Input: separate TrustedCallerContext, exact operation/target, scoped
  *   grant and verified current Discord facts. Output: AuthorityEvaluation with allowed/denied
  *   decision, reasons and revision binding;

@@ -17,7 +17,7 @@
  *
  * Validation:
  * Validate IDs, supported notification version and bounded payload at the consumer. Load the
- * task's actual guild, owner, kind/version and deadline through TaskService.readTaskDescriptor
+ * task's actual installationId/guildId, owner, kind/version and deadline through TaskService.readTaskDescriptor
  * (bot) or WorkerTaskStore.readTaskDescriptor (worker) before routing. Validate
  * stored capability input/output with its separate AI schema at the applicable boundary.
  *

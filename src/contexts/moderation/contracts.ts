@@ -7,14 +7,16 @@
  * Responsibility: Keep domain bindings separate from public use-case DTOs.
  *
  * Planned values:
- * - EvidenceBinding: case reference, exact retained revision, content hash and source coverage;
- *   immutable values, never a retained evidence entity.
+ * - EvidenceBinding: guildId, immutable installationId, case reference, exact original-capture
+ *   evidence revision ID, content hash, coverage and sourceUse=original_evidence;
+ *   immutable values, never a retained evidence entity. This binding validates retained original
+ *   evidence and authorization, not whether the live message remains current or present.
  * - Disposition: established violation, supported suspicion, allowed or incomplete, with rule
  *   reasons. Technical failure is not supported suspicion.
  *
  * DTO locations:
- * - dto/moderation-intake.dto.ts owns message/report/revision arguments and ModerationCaseDto
- *   progress.
+ * - dto/moderation-intake.dto.ts owns message/report/original-capture completion arguments and
+ *   ModerationCaseDto progress.
  * - dto/staff-sanction.dto.ts owns exact staff ban/kick/unban arguments and
  *   StaffSanctionResultDto.
  * - dto/action-outcome.dto.ts owns serialized effect outcomes and bounded recovery summaries.
@@ -36,8 +38,12 @@
  * bot app types, Discord SDK objects, another context's ORM entities or provider clients. Public
  * DTO definitions live only in dto files; no mirrored request/response definitions remain here.
  *
- * Invariants: Source attribution determines targets. DTO structure validation is not identity
- * verification or permission. A worker result cannot replace persisted guild, owner, target or
+ * Invariants: Original source attribution determines targets. A source edit/deletion alone does
+ * not invalidate original_evidence work; current_source bindings belong to consumers that require
+ * current text. Missing original capture means incomplete, not an invitation to assess a later
+ * snapshot. Webhook/system authors cannot become inferred human sanction targets.
+ * DTO structure validation is not identity verification or permission. A worker result cannot
+ * replace persisted guild, installation, owner, target or
  * authority. Moderation entities/repositories remain private; there is no generic
  * execute-any-action contract.
  */

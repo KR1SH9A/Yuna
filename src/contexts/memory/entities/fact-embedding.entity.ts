@@ -1,31 +1,51 @@
-/**
- * Planned component: FactEmbedding
- * Kind: Immutable retained record
- * Owner: Memory
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Keep a model-specific vector tied to an exact permitted fact content and privacy revision.
- *
- * Scope:
- * Staged feature: activate only when personal memory ships.
- *
- * Planned fields:
- * id; guildId; factId; embeddingModel; modelVersion; dimensions; contentHash; privacyRevision;
- * vector; createdAt.
- *
- * Planned methods:
- * No mutation methods planned. Re-embedding creates a new model/content-bound record through
- * validated owner acceptance. Deleting a fact physically removes its associated vectors.
- *
- * Collaborators/Boundaries:
- * Private context-owned MikroORM record. The owning service loads/persists it in the caller
- * transaction. Local methods use supplied values only; no ORM queries, external calls or queue
- * operations. Storage enforces same-guild references and unique keys. Internal IDs are UUIDs;
- * Discord IDs are strings. Mutable records use row revisions and conditional writes.
- *
- * Invariants:
- * Dimensions follow the selected model contract; never hard-code them before selection. Mismatched
- * content hash, model identity or privacy revision makes a result ineligible. Embedding workers
- * cannot write this record directly.
- */
+import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
+import { ScopedEntity } from '../../../platform/db/base.entity.js';
+import { assertNonNegativeInteger, assertUuid, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
+
+export interface FactEmbeddingInput extends ScopedEntityInput {
+  factId: string;
+  model: string;
+  dimensions: number;
+  contentHash: string;
+  privacyRevision: number;
+  vector: readonly number[];
+  acceptedTaskResultId: string;
+}
+
+/** Optional derived personal data, physically deleted with its fact; no index service is activated. */
+@Entity({ tableName: 'fact_embedding' })
+@Unique({ properties: ['installationId', 'guildId', 'id'] })
+@Unique({ properties: ['installationId', 'guildId', 'factId', 'model', 'contentHash', 'privacyRevision'] })
+@Unique({ properties: ['installationId', 'guildId', 'acceptedTaskResultId'] })
+@Check({ name: 'fact_embedding_check_1', expression: '"dimensions" > 0 and "privacy_revision" >= 0' })
+@Check({ name: 'fact_embedding_check_2', expression: 'jsonb_array_length("vector") = "dimensions"' })
+export class FactEmbedding extends ScopedEntity {
+  @Property({ type: 'uuid' }) readonly factId: string;
+  @Property({ type: 'text' }) readonly model: string;
+  @Property({ type: 'integer' }) readonly dimensions: number;
+  @Property({ type: 'text' }) readonly contentHash: string;
+  @Property({ type: 'integer' }) readonly privacyRevision: number;
+  // Portable JSONB until the selected embedding/search contract justifies a vector extension.
+  @Property({ type: 'json' }) readonly vector: readonly number[];
+  @Property({ type: 'uuid' }) readonly acceptedTaskResultId: string;
+
+  constructor(input: FactEmbeddingInput) {
+    super(input);
+    assertUuid(input.factId);
+    assertUuid(input.acceptedTaskResultId);
+    assertNonNegativeInteger(input.dimensions, 'dimensions');
+    invariant(input.dimensions <= 2_147_483_647, 'dimensions exceeds the database integer range');
+    assertNonNegativeInteger(input.privacyRevision, 'privacyRevision');
+    invariant(input.privacyRevision <= 2_147_483_647, 'privacyRevision exceeds the database integer range');
+    invariant(input.dimensions > 0 && input.dimensions === input.vector.length, 'Vector dimensions do not match');
+    invariant(input.vector.every(Number.isFinite), 'Vector coordinates must be finite');
+    invariant(input.model.length > 0 && input.contentHash.length > 0, 'Embedding model and content binding are required');
+    this.factId = input.factId;
+    this.model = input.model;
+    this.dimensions = input.dimensions;
+    this.contentHash = input.contentHash;
+    this.privacyRevision = input.privacyRevision;
+    this.vector = [...input.vector];
+    this.acceptedTaskResultId = input.acceptedTaskResultId;
+  }
+}

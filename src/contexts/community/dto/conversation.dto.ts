@@ -17,7 +17,8 @@
  *   reason. No client-supplied cancellation generation, trusted actor or authority.
  * - ConversationResultDto (output): Request reference, eligibility/progress/terminal status,
  *   expected stage summary when appropriate, optional accepted result/delivery reference and
- *   minimal permitted reason. Do not expose private context or ORM entities.
+ *   minimal permitted reason. Delivery state is derived from ReplyDelivery, independently of
+ *   generation cancellation. Do not expose private context, interaction tokens or ORM entities.
  *
  * Runtime validation: Validate lengths, attachment/reference counts, reference formats and allowed
  * input structure at ingress. The service resolves reply references, checks guild/source ownership
@@ -28,8 +29,9 @@
  * input/output data; validation implementation and its library are not chosen.
  *
  * Receiving/returning services: ConversationService consumes the argument DTOs and returns
- * ConversationResultDto. Completion handlers pass Jobs StoredResultReference to acceptance
- * methods; provider payloads are read from stored results rather than accepted from a public DTO.
+ * ConversationResultDto for authorized use cases/status reads. Completion handlers pass Jobs
+ * StoredResultReference to acceptance methods and receive applied, discarded(reason) or
+ * alreadyHandled; provider payloads are read from stored results rather than a public DTO.
  *
  * Collaborators/Boundaries: ReplyAudienceBinding remains in ../contracts.ts. Ingress maps verified
  * Discord metadata to separate trusted caller/source values, with no bot-app or SDK objects

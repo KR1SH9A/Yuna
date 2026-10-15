@@ -1,9 +1,7 @@
-# Migration design placeholder
+# Deployment migrations remain pending
 
-This directory contains no migrations. The repository is a comment-only design scaffold.
+Entity mappings and `../schema-constraints.ts` now define a testable PostgreSQL schema. `npm run schema:sql` prints the core schema; `npm run schema:sql -- --include-staged` includes all 40 models. The schema has been designed for explicit migration review, never application-startup synchronization. No deployment migration has been applied.
 
-Future migrations will define context-owned tables, Jobs records and Usage records; guild-scoped references; uniqueness and conditional-transition support; immutable task bindings; and restricted bot/worker access. The expected-task acceptance constraint must allow a new task for a repeated workflow stage.
+Use the combined generator: bare MikroORM schema generation omits the additional scalar-ID foreign keys and cross-row guards. Keep these constraints in reviewed migration changes when models change. Database tests apply the combined schema to an isolated temporary PostgreSQL cluster.
 
-Use separate migration credentials. Review pg-boss installation and migration requirements for the pinned version, and apply its schema changes in a controlled deployment step. Do not grant workers broad prepared-input or business-table access to make startup succeed. Worker input release must use a restricted eligibility gate that serializes with invalidation.
-
-Document compatibility for persisted task schemas, deployment ordering, backup/restore and rollback after new task or policy versions are issued. A migration will need real PostgreSQL verification when implementation begins; no migration or test is implemented here.
+Before deploying a service slice, add versioned migrations, restricted bot/worker roles and the selected queue schema. Scope schema deployment to enabled features; optional governance, Memory and Debates remain staged. Runtime workers must not acquire broad prepared-input or business-table access merely to make startup succeed.

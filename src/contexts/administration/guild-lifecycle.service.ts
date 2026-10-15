@@ -9,16 +9,25 @@
  *
  * Planned methods:
  * - readInstallation: Input: verified guild/source identity. Output: minimal InstallationView
- *   including current state and installationGeneration, or absence. Bot ingress uses this owner
- *   read to prepare TrustedCallerContext; it does not query private installation records. The
+ *   including installationId, guildId, immutable generation, product state and observed Discord
+ *   availability, or absence. Bot ingress uses this owner read to prepare TrustedCallerContext; it does not query private installation records. The
  *   read grants no authority, and operations revalidate current installation at admission/dispatch.
  * - registerGuild: Input: authenticated installation/current owner facts and configuration.
- *   Output: fresh or explicitly reactivated installation generation; protected actions require
- *   verified bootstrap.
- * - suspendInstallation: Input: authorized suspension or trusted platform-loss event. Output:
- *   suspended generation/state and affected admission invalidation.
- * - beginRemoval: Input: authenticated removal event/request and generation. Output: removing
- *   state, advanced generation and durable cleanup signals; stop new work before physical cleanup.
+ *   Output: existing current installation or fresh immutable installation row/generation under a
+ *   guild lock after verified removal/reinstallation; protected actions require verified bootstrap.
+ * - recordAvailability: Input: trusted Discord availability observation. Output: readiness update;
+ *   a temporary outage or cache miss never suspends/removes an installation or changes generation.
+ * - suspendInstallation/resumeInstallation: Input: authorized cause and exact installation/revision.
+ *   Output: changed product admission state within the same generation; canceled work never revives.
+ * - beginRemoval: Input: confirmed removal/request and exact installation. Output: removing state
+ *   and captured required-owner cleanup signals; stop new work before physical cleanup.
+ * - recordCleanupProgress: Input: exact installation and owner acknowledgment/retry disposition.
+ *   Output: idempotent recorded progress; late cleanup never addresses the current guild by ID alone.
+ * - updateUsagePolicy: Input: authorized exact installation, expected policy revision and validated
+ *   limit/window values. Output: revised current policy; serialize with reservation admission and
+ *   preserve existing snapshots/spend/liabilities, including applicable prior-installation spend.
+ * - setFeatureAdmission: Input: authorized feature admission and drain/cancel choice. Output: revised
+ *   settings while completion/cleanup routes remain available for outstanding work.
  * - completeRemoval: Input: installation and required owner cleanup acknowledgments. Output:
  *   removed status and minimal retained invalidation metadata.
  *

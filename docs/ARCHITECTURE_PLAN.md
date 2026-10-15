@@ -1,8 +1,8 @@
 # Yuna architecture plan
 
-This is a target design for the comment-only scaffold, not implemented behavior. It resolves the task lifecycle, durable intake, cleanup, configuration ownership, revision checks and task routing. The [data model reference](DATA_MODEL_REFERENCE.md) covers persistent models; the [DTO and module reference](DTO_REFERENCE.md) covers boundary data and public service wiring. The DTO organization and module export rules are now represented in the scaffold; the runtime lifecycle changes remain planned.
+This is the target service architecture, supported by an implemented and tested entity layer. Services and external integrations remain scaffolds. It resolves the task lifecycle, durable intake, cleanup, configuration ownership, revision checks and task routing. The [entity model plan](DATA_MODEL_REFERENCE.md) is the authoritative target for persistent fields, ownership and Discord API constraints; the [DTO and module reference](DTO_REFERENCE.md) covers boundary data and public service wiring. The DTO organization and module export rules are now represented in the scaffold; the runtime lifecycle changes remain planned.
 
-**Confirmed scope:** both Moderation and potentially eligible Community input recover after local persistence. Community replies have a deadline and expire instead of arriving late. Memory and Debates remain staged; optional governance remains optional. There is no appeal or speech subsystem. Ordinary authenticated staff unban remains part of Moderation.
+**Confirmed scope:** Moderation assesses only retained original message content, and both Moderation and potentially eligible Community input recover after local persistence. Community replies have a deadline and expire instead of arriving late. Memory and Debates remain staged; optional governance remains optional. There is no appeal or speech subsystem. Automatic supported-policy bans require no staff review. Unban can only originate from an explicit Yuna request by a current Discord administrator; optional governance and AI cannot initiate it. A later edit, deletion, report or REST fetch does not substitute for an uncaptured original. Evidence capture revisions may improve coverage of that same original; they are not message-edit history.
 
 ## 1. Runtime and ownership
 
@@ -32,6 +32,15 @@ Validation must be wired into the actual Discord and queue entry points. Validat
 
 Feature modules explicitly export the services consumed by bot entry points, completion handlers and recovery. Entity registrations, policies and repositories stay private. DTOs/types are data imports, not dependency-injection providers. Native ORM repositories and queries are the starting persistence mechanism. Introduce a feature-owned custom repository only when concrete repeated or complex queries justify one; services remain responsible for transactions and business decisions.
 
+
+### Entity ownership and Discord lifecycle
+
+The entity model plan keeps the existing 40 concepts, including four core additions. Community owns accepted reply text before acknowledging a Jobs result; delivery outcome is authoritative on ReplyDelivery rather than a second request flag. Findings carry immutable capture and policy references. Approved knowledge content is immutable; replacement is a new approved entry, while visibility changes use existing authorized revision updates.
+
+Discord IDs are strings; native user/member/channel data is not mirrored as a general database model. A missing message or restricted content is not fabricated evidence. Current API updates must be normalized from their supported shape, without assuming every update is partial. Attachment URLs are temporary locators. Channel sends and deferred interaction-original responses have different destination/expiry contracts; secrets stay outside Jobs and audit. Ban/unban/kick may succeed without an external action ID. A temporary guild outage is not an uninstall.
+
+Local application methods join or create short transactions and perform no external I/O. Orchestration methods such as dispatch enter outside an active transaction, read external facts, claim locally, perform the external operation after commit, then record its observed outcome in another short transaction. Shared service classes do not imply that every method has the same transaction contract.
+
 ## 2. Durable input starts before feature routing
 
 Introduce two concepts under bot ingress: `IntakeEvent` and `IntakeDelivery`. They are separate from AI tasks because input may be ignored, recorded without inference, or delivered to more than one owner.
@@ -41,17 +50,17 @@ Introduce two concepts under bot ingress: `IntakeEvent` and `IntakeDelivery`. Th
 3. Claim one receipt with a lease and generation. In one transaction, validate the claim, invoke the owner's local admission operation, persist its workflow/tasks/outbox and acknowledge the receipt. A receipt finishes when the feature durably accepts, ignores or expires the input, not when AI or Discord work finishes.
 4. Recover unfinished receipts from database state. A crash before the owner transaction commits permits replay; a crash after commit cannot admit the same receipt twice.
 
-Deduplicate events by `(guildId, installationGeneration, sourceEventKey)` and receipts by `(eventId, owner)`. Derive the source key from the event kind, stable source identity and available source revision; use a canonical snapshot hash where the source has no reliable event identifier. Do not treat a content hash as a universal ordering mechanism.
+Deduplicate events by `(installationId, sourceEventKey)` with enforced guild scope, and receipts by `(installationId, eventId, owner)`. Installation identity is immutable; command/report receipts do not change the current-message marker. Use stable create/delete/interaction identities and exact available transport identity for update replay. Without a reliable update event identity, retain a new local observation; only coalesce an unchanged current fingerprint under the source gate. A historical hash match must not drop A → B → A, and no hash establishes remote ordering.
 
-Serialize intake commits for the relevant ordering key and record a local ingress sequence. Moderation admits revisions in source order; Community can serialize admission by channel. Long-running inference does not hold that admission lock. A local sequence records local receipt order, not complete Discord history. Owners reject demonstrably older source revisions and record missing or ambiguous coverage instead of inventing it.
+Serialize intake commits for the relevant ordering key and record a local ingress sequence. Moderation deduplicates the original message capture and reports that refer to it; current-source consumers such as Community can serialize admission by channel. Long-running inference does not hold that admission lock. A local sequence records local receipt order, not complete Discord history. Current-source owners reject demonstrably older observations and record missing or ambiguous coverage instead of inventing it. Moderation separately binds retained original evidence, including a missing-original disposition when necessary.
 
-Retain a latest-observed source revision/deletion marker in `IntakeEvent` metadata, with a stable `sourceKey` and at most one current marker per guild/installation/source. Update it under a transaction-scoped source-key lock; keep its tombstone through outstanding work and the bounded replay window even after payload deletion. An older remote revision arriving later cannot become current merely because its ingress sequence is higher. Ambiguous ordering marks source validity unresolved until a trusted refresh can establish it; dependent work cannot assume it is current. The small intake module can live in `src/platform/intake`, with consumer routing in `apps/bot`. Its public `lockAndReadSource` operation lets owners validate currentness without importing bot application code. Registration and acceptance acquire that same source gate. Recording a newer or unresolved source revision also invalidates affected prepared inputs through Jobs in that transaction, so delayed older admission cannot restore eligibility. This records the latest source state Yuna has observed, not an omniscient view of Discord.
+Retain a latest-observed source revision/deletion marker in `IntakeEvent` metadata, with a stable `sourceKey` and at most one current marker per guild/installation/source. Update it under a transaction-scoped source-key lock; keep its tombstone through outstanding work and the bounded replay window even after payload deletion. An older remote revision arriving later cannot become current merely because its ingress sequence is higher. Ambiguous ordering marks source validity unresolved until a trusted refresh can establish it; current-source work cannot assume it is current. Original-evidence work validates its retained capture separately. The small intake module can live in `src/platform/intake`, with consumer routing in `apps/bot`. Its public `lockAndReadSource` operation lets owners validate currentness without importing bot application code. Registration and acceptance acquire that same source gate. Recording a newer or unresolved source observation also invalidates affected `current_source` prepared inputs through Jobs in that transaction, so delayed older admission cannot restore eligibility. It does not invalidate `original_evidence` moderation work solely because the message was edited or deleted. That work remains subject to capture validity, retention, policy, permissions, safety and installation checks. This records the latest source state Yuna has observed, not an omniscient view of Discord.
 
 The Community deadline is established at intake and copied unchanged into the conversation request, relevant tasks and reply delivery. Check it before paid work, acceptance and any new send. Restart and retry never extend it. A send already in flight or with an unknown outcome still needs reconciliation after expiry. Moderation does not inherit the reply deadline: processing exhaustion parks its intake visibly for recovery. A hard retention deadline requires an explicit failed receipt and operational notice, not silent loss.
 
 Keep snapshots until required consumers have acknowledged and captured their own data, then apply the bounded intake retention policy. Retain only minimal deduplication metadata afterward. This is not a permanent message archive. A stored attachment URL does not preserve its bytes: track durable captured artifacts and missing-media coverage separately. Upstream events that never reach the local commit are outside this recovery guarantee.
 
-Proposed ingress operations: `recordInput`, `claimDelivery`, `completeDelivery`, `recoverDueDeliveries` and `purgeExpiredSnapshots`. Keep normalization in the existing Discord adapter; the bot composition root owns consumer routing. A small `IntakeService` and its records are sufficient when implemented.
+Proposed ingress operations: `recordInput`, `claimDelivery`, `completeDelivery`, `recoverDueDeliveries` and `purgeExpiredSnapshots`. Keep normalization in the existing Discord adapter; the bot composition root owns consumer routing. A small `IntakeService` and its records are sufficient when implemented. A future authorized report lookup can use the receipt owner reference rather than an unbounded report array on a case.
 
 ## 3. One authoritative AI task lifecycle
 
@@ -76,7 +85,7 @@ Keep these records distinct:
 | `TaskResult` | What is the single terminal outcome of the logical task? |
 | `TaskAcceptance` | Did its owner apply or discard that terminal outcome? |
 
-Change the current scaffold's **one result per attempt** rule to **one terminal result per task**. Intermediate retryable failures stay on attempts. They do not notify the owner. A terminal result has outcome `success`, `uncertain`, `failure`, `canceled` or `expired`; its attempt reference is nullable when no provider attempt produced it. A valid uncertain answer ends execution; retries must not repeatedly sample until an answer becomes favorable.
+**There is one terminal result per task.** Intermediate retryable failures stay on attempts. They do not notify the owner. A terminal result has outcome `success`, `uncertain`, `failure`, `canceled` or `expired`; its attempt reference is nullable when no provider attempt produced it. A valid uncertain answer ends execution; retries must not repeatedly sample until an answer becomes favorable.
 
 The transaction that finishes a task writes the terminal result and completion outbox together. Cancellation racing a result uses the same conditional task transition: one wins, and late output cannot replace it. Late usage evidence remains recordable independently.
 
@@ -125,7 +134,7 @@ Append bounded `AuditEntry` records in the audited local transaction. Record int
 | Late usage evidence | Idempotently settle the original attempt; never let a later timeout overwrite known actual usage |
 | Reservation recovery | Release only demonstrably unused reservations; reconcile unknown ones without treating expiry as a refund |
 
-Add bounded recovery entry points for intake, task expiry, reservation reconciliation, all enabled owners' retention, artifact cleanup and guild-removal acknowledgments. Do not place cross-context deletion queries in the scheduler. `completeRemoval` requires every recorded owner acknowledgment; reinstalling creates a new generation and cannot revive old work.
+Add bounded recovery entry points for intake, task expiry, reservation reconciliation, all enabled owners' retention, artifact cleanup and guild-removal acknowledgments. Do not place cross-context deletion queries in the scheduler. `completeRemoval` requires every recorded owner acknowledgment. `GuildInstallation` has an immutable UUID and generation; beginning removal blocks that row rather than rewriting its identity. Reinstalling creates a new row/generation and cannot revive old work. Temporary Discord unavailability only updates availability/readiness, not removal state or generation. Outstanding old-generation effects and cost liabilities remain tracked.
 
 ## 5. Configuration changes have named application owners
 
@@ -139,7 +148,7 @@ Entities validate local values; these services authorize and commit configuratio
 | Usage limits | Proposed `GuildLifecycleService.updateUsagePolicy` | Authorize, validate and revise policy; serialize with reservation admission; preserve prior usage liabilities |
 | Feature admission | Proposed `GuildLifecycleService.setFeatureAdmission` | Explicitly select drain or cancel; retain completion and cleanup support for outstanding work |
 | Channel reply behavior | Proposed `ConversationService.updateChannelReplySettings` | Advance settings revision; invalidate obsolete pending requests/tasks/deliveries |
-| Approved knowledge | `KnowledgeService` approval/retirement plus proposed `updateVisibility` | Advance entry revision; invalidate affected disclosed-context preparation and pending replies |
+| Approved knowledge | `KnowledgeService` approval/retirement plus `changeVisibility` | Advance entry revision; invalidate affected disclosed-context preparation and pending replies |
 | Moderation policy | Proposed `ModerationService.publishPolicyRevision` | Append and immediately activate a new immutable guild revision; invalidate obsolete automatic work |
 | Memory consent | `MemoryService` consent/deletion operations | Advance privacy fence; block disclosure before cleanup |
 | Debate rubric | Proposed `DebateService.publishRubricRevision` | Append immutable rubric; existing frozen sessions retain their explicitly bound rubric |
@@ -156,14 +165,14 @@ For initial moderation policy management, publishing is activation: the highest 
 | Business validity binding | Describe exactly which source and policy authorize work | Evidence/policy revision, knowledge version, memory privacy fence, installation generation |
 | Execution generation | Reject writes from a superseded executor | Task lease generation, action claim generation |
 
-Do not use one generic version number for all three. Every task stores only the relevant immutable bindings, supplied by its owner. Sequenced workflows store their expected task for each pending stage/variant. Independent one-shot operations use an owner-supplied unique operation key, explicit supersession rules and validity bindings instead. Model output supplies none of these identities.
+Do not use one generic version number for all three. Every task stores only the relevant immutable bindings, supplied by its owner, including immutable installation identity and the declared source use (`original_evidence`, `current_source` or none). Sequenced workflows store their expected task for each pending stage/variant. Independent one-shot operations use an owner-supplied unique operation key, explicit supersession rules and validity bindings instead. Model output supplies none of these identities.
 
 Check bindings at four boundaries:
 
-1. **Registration:** owner validates source, permission, current scopes and deadline before committing input and task.
+1. **Registration:** owner validates the selected original-evidence or current-source binding, permission, current scopes and deadline before committing input and task.
 2. **Disclosure:** Jobs checks current prepared-input eligibility, deadline and execution claim before releasing bytes or artifact access.
 3. **Acceptance:** owner checks current operation, expected task where applicable, relevant revisions, invalidation and result schema before applying the outcome.
-4. **Effect dispatch:** effect owner checks current installation, safety, authority, source, audience and deadline before authorizing a new external call.
+4. **Effect dispatch:** effect owner checks current installation, safety, authority, applicable original-evidence/current-source binding, audience and deadline before authorizing a new external call. Source deletion alone does not revoke a retained original-evidence finding.
 
 Initially use `PreparedInput.eligible` with indexed scope/revision bindings. Registration and invalidation lock the same existing owner scope rows, such as `MemoryScope` or `GuildInstallation`. Invalidation updates affected prepared inputs in that transaction. Release locks the prepared-input row and verifies its gate. Jobs never needs to query business tables. Introduce a Jobs-owned scope gate only if measured invalidation fan-out makes these updates unsuitable.
 
@@ -172,6 +181,8 @@ Document one lock order for implementation: installation/safety, source-key gate
 A memory privacy fence invalidates **pending work**. It does not automatically invalidate every surviving unchanged fact or require all vectors to be rebuilt after an unrelated deletion. Stored retrieval still checks current consent, audience, fact existence, expiry, content hash and the selected embedding model/version/dimensions. Initially select that model through versioned runtime configuration consumed by Memory; an explicit future migration can allow multiple indexes. Knowledge retirement similarly invalidates pending use of the retired version.
 
 Database fencing controls permission to start local dispatch; it cannot recall a provider request or Discord action already in flight. Fetch current Discord facts outside transactions and revalidate local bindings before claiming dispatch. Unknown external outcomes must be reconciled before retry, including after cancellation or deadline expiry.
+
+An event-driven moderation action must have a committed database record linked to its exact original evidence, accepted finding and policy before Discord dispatch. Store original text/source attribution and capture details in EvidenceRevision, retained media through its artifacts, and the actual attempt/outcome on the action records. Keep these owner-owned details for the configured action-evidence review period within explicit evidence/artifact deadlines; routine Intake/Jobs cleanup cannot erase them. Required evidence purge leaves a visible unavailable time/reason, not a replacement fetched from the current message. Reuse the existing records without duplicating evidence into action JSON.
 
 ## 7. Every supported task has an end-to-end route
 
@@ -187,11 +198,11 @@ Persist task `kind` and `schemaVersion` separately; `@1` below is shorthand. Tas
 | `memory.embed_fact@1` — optional staged indexing | Memory / existing fact vector | `EmbeddingInput → EmbeddingResult` | `handleEmbedding → EmbeddingService.embedTexts` | `MemoryService.acceptEmbeddingResult` |
 | `debates.evaluate@1` — staged | Debates / frozen evaluation variant | `AssessmentInput → AssessmentResult` | `handleAssessment → JevService.assessQuestions` | `DebateService.acceptEvaluation` |
 
-Each route needs guild/installation, owner operation reference, relevant revision bindings, source/input hash, deadline and usage linkage; sequenced workflows also bind stage and expected task. Validate feature-specific output too: known question IDs, permitted routing candidates, fact provenance, or frozen transcript/rubric/variant. Required paired debate evaluations use distinct tasks and expected-task slots; workflow/stage alone is not unique.
+Each route needs guild/immutable installation ID, owner operation reference, relevant revision bindings and source-use mode, source/input hash, deadline and usage linkage; sequenced workflows also bind stage and expected task. Validate feature-specific output too: known question IDs, permitted routing candidates, fact provenance, or frozen transcript/rubric/variant. Required paired debate evaluations use distinct tasks and expected-task slots; workflow/stage alone is not unique.
 
 For one-shot Memory proposals, the operation key includes scope, source identity/revision, purpose and explicit proposal/configuration revision, within the guild/installation. Different sources can proceed concurrently. Deduplication alone does not establish currentness: validate the retained ingress source marker as well as current consent. A deliberate replacement invalidates its specific predecessors, including terminal but unaccepted work, without blocking unrelated proposals. Fact embedding instead binds an existing fact/content hash and selected model/version/dimensions. Apply facts or vectors and `TaskAcceptance` atomically. These operations need no additional Memory workflow entity initially; Jobs stores the owner-supplied operation identity and invalidation metadata, and Memory owns its meaning.
 
-Keep static worker and bot completion maps in their composition roots. Shared contract metadata imports no services. When implemented, a boundary check must compare admitted kind/version pairs with both handler and acceptance coverage. A feature cannot admit work unless the deployed worker and owner continuation support it.
+Keep static worker and bot completion maps in their composition roots. Shared contract metadata imports no services. When implemented, a boundary check must compare admitted kind/version pairs with both handler and acceptance coverage. A feature cannot admit work unless the deployed worker and owner continuation support it. A worker that cannot handle a version must not globally park a task that another deployed worker supports; version-aware dispatch/admission distinguishes worker-local incompatibility from deployment-wide unavailability.
 
 Defer the current unowned explanation schema/handler/capability from the implementation plan until a feature supplies its requester and acceptor. Memory extraction requires its explicit fact-proposal contract; do not disguise it as generic reply generation.
 
@@ -201,7 +212,7 @@ Disabling new admission, removing deployment support and invalidating permission
 
 ## 8. Repository organization and remaining work
 
-The scaffold now has feature-owned DTO files, narrowed contract catalogs, explicit module exports and a static task lookup. Their behavior is still unimplemented. The following table separates that organization from the remaining lifecycle work.
+The entity layer now has all 40 models, local transition guards, scoped PostgreSQL constraints and executable tests. Feature-owned DTO files, contract catalogs, module exports and the static task lookup remain scaffolds. Service orchestration, live authorization, external dispatch and deployment migrations are still unimplemented. The following table separates that organization from the remaining lifecycle work.
 
 | Area | Planned change |
 | --- | --- |
@@ -210,7 +221,7 @@ The scaffold now has feature-owned DTO files, narrowed contract catalogs, explic
 | `src/platform/db/transaction-context.ts` | Defer/remove placeholder wrapper; use native transaction/request-context primitives until repetition demonstrates a need |
 | `src/ai/llm/prompts`, `src/ai/jev/questions` | Create asset directories when real versioned assets exist; empty README-only placeholders are unnecessary |
 | Bot ingress / `src/platform/intake` | Add the small durable intake boundary, source validity gate and two records; keep consumer wiring in the bot |
-| Jobs | Align comments, methods and constraints with the single lifecycle above |
+| Jobs | Implement the documented single terminal-result lifecycle, source-use bindings and restricted disclosure |
 | Artifacts / Audit | Make their already implied durable records explicit |
 | Existing feature owners | Add configuration, retention and removal entry points as specified |
 | Memory / Debates / governance | Keep clearly staged; do not activate incomplete task or cleanup routes |
@@ -232,7 +243,7 @@ Meaningful acceptance checks for that implementation:
 - Restart after the reply deadline: no new late send; an unknown prior send is still reconciled.
 - Retryable failure followed by success: two attempts, one terminal result and one owner acknowledgment.
 - Crash after result commit: completion resumes without another provider call.
-- Race source edit, grant revoke, pause, memory deletion or guild removal against registration/release/acceptance: obsolete work cannot gain new disclosure or dispatch authority.
+- Race source edit against current-source registration/release/acceptance: obsolete Community work cannot gain authority, while original-only Moderation remains bound to its retained original. Race grant revoke, pause, memory deletion or guild removal against relevant work: invalidated work cannot gain new disclosure or dispatch authority.
 - Stale worker result: payload cannot replace the terminal outcome, but its actual usage is recorded once.
 - Cancel before disclosure versus timeout after disclosure: only proven unused capacity is released.
 - Crash during upload or deletion: every object is tracked and cleanup eventually reaches its recorded disposition.

@@ -19,7 +19,9 @@
  *
  * Runtime validation: Check output identifiers, operation/lifecycle labels and conditional fields
  * against the owner-recorded outcome. A message reference exists only when established; unknown
- * outcomes cannot be serialized as success. Recovery results are bounded and scoped to the trusted
+ * outcomes cannot be serialized as success. Ban/unban/kick may be confirmed by 204 without any
+ * returned external action ID; do not invent one from a local audit correlation. Recovery results
+ * are bounded and scoped to the trusted guild/installation
  * scheduling request.
  *
  * Planned methods: No business methods or queries planned. These comments describe plain

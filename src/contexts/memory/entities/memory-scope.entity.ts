@@ -1,35 +1,78 @@
-/**
- * Planned component: MemoryScope
- * Kind: Context-private entity
- * Owner: Memory
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Serialize purpose-specific consent and privacy revision for one guild/user.
- *
- * Scope:
- * Staged feature: activate only when personal memory ships.
- *
- * Planned fields:
- * id; guildId; userId; purposeSpecificConsent; allowedAudiences; privacyRevision;
- * retentionConfiguration; rowRevision; createdAt; updatedAt.
- *
- * Planned methods:
- * - grantConsent: Input: verified explicit purpose/audience/retention choice and expected
- *   revision. Output: revised consent binding for that scope.
- * - revokeConsent: Input: verified purpose/scope withdrawal and expected revision. Output:
- *   withdrawn consent with advanced privacy revision.
- * - advancePrivacyRevision: Input: deletion/expiry/change cause and expected revision. Output:
- *   next monotonic revision to fence derived work; services perform associated invalidation
- *   atomically.
- *
- * Collaborators/Boundaries:
- * Private context-owned MikroORM record. The owning service loads/persists it in the caller
- * transaction. Local methods use supplied values only; no ORM queries, external calls or queue
- * operations. Storage enforces same-guild references and unique keys. Internal IDs are UUIDs;
- * Discord IDs are strings. Mutable records use row revisions and conditional writes.
- *
- * Invariants:
- * Unique guild/user scope. Privacy revision never decreases. A later proposal/embedding commit
- * cannot reuse an old revision after withdrawal or deletion.
- */
+import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
+import { ScopedEntity } from '../../../platform/db/base.entity.js';
+import { assertDate, assertDiscordId, assertNonNegativeInteger, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
+
+export interface PurposeConsent { granted: boolean; changedAt: string; sourceRequestId: string }
+export type MemoryAudience = { kind: 'subject' } | { kind: 'channel'; channelId: string };
+export interface MemoryPrivacyConfiguration {
+  purposeConsents: Readonly<Record<string, PurposeConsent>>;
+  allowedAudiences: readonly MemoryAudience[];
+  retentionConfiguration: { maxAgeSeconds: number };
+}
+export interface MemoryScopeInput extends ScopedEntityInput {
+  userId: string;
+  privacy: MemoryPrivacyConfiguration;
+}
+
+function validatePrivacy(value: MemoryPrivacyConfiguration): void {
+  assertNonNegativeInteger(value.retentionConfiguration.maxAgeSeconds, 'maxAgeSeconds');
+  invariant(value.retentionConfiguration.maxAgeSeconds > 0, 'Memory retention must be explicit and positive');
+  value.allowedAudiences.forEach(audience => {
+    if (audience.kind === 'channel') assertDiscordId(audience.channelId);
+  });
+  Object.entries(value.purposeConsents).forEach(([purpose, consent]) => {
+    invariant(purpose.length > 0 && consent.sourceRequestId.length > 0, 'Purpose consent needs authenticated provenance');
+    assertDate(new Date(consent.changedAt), 'consent changedAt');
+  });
+}
+
+/** Staged consent gate, retained through deletion so late inference cannot recreate forgotten facts. */
+@Entity({ tableName: 'memory_scope' })
+@Unique({ properties: ['installationId', 'guildId', 'id'] })
+@Unique({ properties: ['installationId', 'guildId', 'userId'] })
+@Check({ name: 'memory_scope_check_1', expression: '"privacy_revision" >= 0' })
+@Check({ name: 'memory_scope_check_2', expression: '"row_revision" >= 1' })
+export class MemoryScope extends ScopedEntity {
+  @Property({ type: 'text' }) readonly userId: string;
+  @Property({ type: 'json' }) purposeConsents: Readonly<Record<string, PurposeConsent>>;
+  @Property({ type: 'json' }) allowedAudiences: readonly MemoryAudience[];
+  @Property({ type: 'json' }) retentionConfiguration: MemoryPrivacyConfiguration['retentionConfiguration'];
+  @Property({ type: 'integer' }) privacyRevision = 0;
+  @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
+  @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
+
+  constructor(input: MemoryScopeInput) {
+    super(input);
+    assertDiscordId(input.userId);
+    validatePrivacy(input.privacy);
+    this.userId = input.userId;
+    this.purposeConsents = copyJson(input.privacy.purposeConsents);
+    this.allowedAudiences = copyJson(input.privacy.allowedAudiences);
+    this.retentionConfiguration = copyJson(input.privacy.retentionConfiguration);
+    this.updatedAt = new Date(this.createdAt);
+  }
+
+  /** The service invalidates affected prepared inputs in the same transaction. */
+  revisePrivacy(privacy: MemoryPrivacyConfiguration, expectedRevision: number, at: Date): void {
+    invariant(expectedRevision === this.privacyRevision, 'Stale privacy revision');
+    validatePrivacy(privacy);
+    assertDate(at, 'at');
+    invariant(this.privacyRevision < 2_147_483_647 && this.rowRevision < 2_147_483_647, 'Revision exhausted');
+    this.purposeConsents = copyJson(privacy.purposeConsents);
+    this.allowedAudiences = copyJson(privacy.allowedAudiences);
+    this.retentionConfiguration = copyJson(privacy.retentionConfiguration);
+    this.privacyRevision += 1;
+    this.rowRevision += 1;
+    this.updatedAt = new Date(at);
+  }
+
+  advanceDeletionFence(expectedRevision: number, at: Date): number {
+    invariant(expectedRevision === this.privacyRevision, 'Stale deletion fence');
+    assertDate(at, 'at');
+    invariant(this.privacyRevision < 2_147_483_647 && this.rowRevision < 2_147_483_647, 'Revision exhausted');
+    this.privacyRevision += 1;
+    this.rowRevision += 1;
+    this.updatedAt = new Date(at);
+    return this.privacyRevision;
+  }
+}

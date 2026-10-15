@@ -22,7 +22,9 @@
  * - acceptFactProposal: Input: stored proposal result reference and expected scope/source/privacy
  *   binding. Output: accepted fact reference or rejection. Load the bound result and validate
  *   subject, sensitivity, provenance and current consent before accepting once. Store the
- *   permitted fact; register an embedding task only when embedding retrieval is enabled.
+ *   permitted immutable fact with acceptance operation/item identity; authorized corrections create
+ *   replacement facts and invalidate/clean predecessors. No accepted content depends on Jobs payload
+ *   retention. Register an embedding task only when embedding retrieval is enabled.
  * - acceptEmbeddingResult: Input: stored embedding result reference, existing fact identity/hash
  *   and current privacy revision. Output: attached vector or rejection. Load the bound result and
  *   atomically validate the existing fact, consent and model/version/dimensions. Never recreate a

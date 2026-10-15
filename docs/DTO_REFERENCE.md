@@ -1,6 +1,6 @@
 # Yuna DTO and module reference
 
-Yuna keeps request/response shapes next to the feature that owns the operation. This reference maps the comment-only DTO files to their services and explains validation, trusted identity, module exports and persistence ownership. The [entity lookup](DATA_MODEL_REFERENCE.md) covers stored records; the [architecture plan](ARCHITECTURE_PLAN.md) covers durable execution and recovery.
+Yuna keeps request/response shapes next to the feature that owns the operation. This reference maps the comment-only DTO files to their services and explains validation, trusted identity, module exports and persistence ownership. The [entity model plan](DATA_MODEL_REFERENCE.md) is authoritative for target stored records and their ownership; the [architecture plan](ARCHITECTURE_PLAN.md) covers durable execution and recovery.
 
 These files describe the design. They do not declare executable DTO classes, validators, NestJS providers or database models yet. Memory, Debates and optional governance remain staged.
 
@@ -24,7 +24,7 @@ For example, the Moderation feature keeps a shallow structure:
 ```text
 src/contexts/moderation/
   moderation.module.ts           # Registers private records and exports named services
-  moderation.service.ts          # Intake, evidence revisions and AI result acceptance
+  moderation.service.ts          # Intake, original capture coverage and AI result acceptance
   staff-moderation.service.ts     # Authenticated ban, unban and optional kick requests
   moderation.policy.ts           # Pure decision rules
   ban.service.ts                 # Ban/unban intent, dispatch and recovery
@@ -49,11 +49,11 @@ For a staff ban, the handler validates `BanRequestDto` containing the exact targ
 | `InteractionContextDto` | Discord normalizer from authenticated transport metadata | Who invoked the interaction and where it came from |
 | `SourceProvenance` | Discord normalizer from observed source metadata | Message identity, attributable author/revision and capture provenance, including explicitly missing attribution |
 | Feature request DTO | Handler validation of allowlisted command arguments | What operation arguments were supplied |
-| `TrustedCallerContext` | Bot entry point using verified identity and owner-loaded installation state | Transport-neutral actor, guild, installation generation and source request identity |
+| `TrustedCallerContext` | Bot entry point using verified identity and owner-loaded installation state | Transport-neutral actor, guild, immutable installation ID/generation and source request identity |
 | `StaffRequestAuthority` or `PolicyAuthority` | Administration authorization operations using current facts | The precise authority relevant to the operation |
 | Feature response DTO | Owning service after access filtering | The permitted serialized result/progress view |
 
-`TrustedCallerContext` is defined once in [Administration contracts](../src/contexts/administration/contracts.ts). It records provenance, not permission. User arguments cannot override its actor, guild or installation fields. A requested target ID is valid input but still requires scope/access checks. Automatic moderation and scheduled recovery use their explicit system-policy or stored-operation bindings; they do not impersonate a human caller.
+`TrustedCallerContext` is defined once in [Administration contracts](../src/contexts/administration/contracts.ts). It records provenance, not permission. User arguments cannot override its actor, guild or installation identity fields. A requested target ID is valid input but still requires scope/access checks. Automatic moderation and scheduled recovery use their explicit system-policy or stored-operation bindings; they do not impersonate a human caller.
 
 Normalized message DTOs include both trusted source metadata and untrusted content, marked separately. Ingress maps those into the feature's argument DTO and trusted source values. Features do not import the bot application or Discord SDK objects. A claimed author inside message text is never trusted source metadata.
 
@@ -79,7 +79,7 @@ The files below contain fields, producer/consumer responsibilities and validatio
 
 | File | DTOs | Service operations and direction |
 | --- | --- | --- |
-| [moderation-intake.dto.ts](../src/contexts/moderation/dto/moderation-intake.dto.ts) | `IngestMessageDto`, `ReportMessageDto`, `ReviseEvidenceDto`, `ModerationCaseDto` | Arguments into `ModerationService.ingestMessage`, `ingestReport`, `reviseEvidence`; serialized case/progress out of intake and acceptance. Original source identity remains separate. |
+| [moderation-intake.dto.ts](../src/contexts/moderation/dto/moderation-intake.dto.ts) | `IngestMessageDto`, `ReportMessageDto`, `CompleteOriginalCaptureDto`, `ModerationCaseDto` | Arguments into `ModerationService.ingestMessage`, `ingestReport`, `completeOriginalCapture`; authorized case/progress out of human operations and small internal dispositions out of acceptance. Original source identity remains separate. Capture completion may improve the same original; edits/deletion do not become replacement evidence. Internal acceptance returns a small continuation outcome; human-facing case views require an authorized projection. |
 | [staff-sanction.dto.ts](../src/contexts/moderation/dto/staff-sanction.dto.ts) | `BanRequestDto`, `UnbanRequestDto`, optional `KickRequestDto`, `StaffSanctionResultDto` | Arguments into `StaffModerationService.requestBan`, `requestUnban`, optional `requestKick`; authorized acceptance/denial out. |
 | [action-outcome.dto.ts](../src/contexts/moderation/dto/action-outcome.dto.ts) | `ModerationActionOutcomeDto`, `ModerationRecoveryResultDto` | Internal bounded responses from `BanService`, `WarningService` and optional `KickService` dispatch/reconciliation/recovery. No arbitrary public execution request. |
 
@@ -87,8 +87,8 @@ The files below contain fields, producer/consumer responsibilities and validatio
 
 | File | DTOs | Service operations and direction |
 | --- | --- | --- |
-| [conversation.dto.ts](../src/contexts/community/dto/conversation.dto.ts) | `ConversationInputDto`, `CancelConversationDto`, `ConversationResultDto` | Arguments into `ConversationService.receiveInput` / `cancelRequest`; permitted progress out of admission and result acceptance. |
-| [knowledge.dto.ts](../src/contexts/community/dto/knowledge.dto.ts) | `ApproveKnowledgeEntryDto`, `RetireKnowledgeEntryDto`, `VisibleKnowledgeQueryDto`, `KnowledgeEntryDto` | Arguments into `KnowledgeService.approveEntry`, `retireEntry`, `findVisibleEntries`; scoped entry views out. Automatic lookup uses verified source/installation/audience values; human operations also carry `TrustedCallerContext`. |
+| [conversation.dto.ts](../src/contexts/community/dto/conversation.dto.ts) | `ConversationInputDto`, `CancelConversationDto`, `ConversationResultDto` | Arguments into `ConversationService.receiveInput` / `cancelRequest`; permitted progress out of admission and `getConversationStatus`; internal acceptance returns applied/discarded/alreadyHandled. |
+| [knowledge.dto.ts](../src/contexts/community/dto/knowledge.dto.ts) | `ApproveKnowledgeEntryDto`, `ChangeKnowledgeVisibilityDto`, `RetireKnowledgeEntryDto`, `VisibleKnowledgeQueryDto`, `KnowledgeEntryDto` | Arguments into `KnowledgeService.approveEntry`, `changeVisibility`, `retireEntry`, `findVisibleEntries`; scoped entry views out. Automatic lookup uses verified source/installation/audience values; human operations also carry `TrustedCallerContext`. |
 | [reply-delivery.dto.ts](../src/contexts/community/dto/reply-delivery.dto.ts) | `ReplyDeliveryOutcomeDto`, `ReplyRecoveryResultDto` | Internal bounded publication/recovery responses from `ReplyDeliveryService`; confirmed and unknown delivery remain distinct. |
 
 ### Administration
@@ -122,6 +122,8 @@ The files below contain fields, producer/consumer responsibilities and validatio
 | [interaction-context.dto.ts](../src/discord/dto/interaction-context.dto.ts) | `InteractionContextDto` | Verified transport → bot caller-context preparation, separate from operation arguments |
 | [normalized-interaction.dto.ts](../src/discord/dto/normalized-interaction.dto.ts) | `NormalizedInteractionDto` | `DiscordInputNormalizer.normalizeInteraction` → `DiscordHandlers.onInteraction` → known feature argument validation |
 | [task-signal.dto.ts](../src/platform/jobs/dto/task-signal.dto.ts) | `TaskSignalDto` | `OutboxRelay` → worker execution handlers or bot `CompletionHandlers`; actual metadata/result is loaded from Jobs |
+
+Local write methods join/create short transactions without external I/O. Dispatch/reconciliation orchestrators enter outside an active transaction. Authorized owner reads are added for concrete staff/status workflows; internal completion outcomes are not human-facing views.
 
 The configuration writers proposed in the architecture plan, such as policy publication and channel-setting mutation, still require their complete operation contracts when added to the scaffold. This organizational change makes already-described use cases visible; it does not silently add those operations or activate staged features.
 

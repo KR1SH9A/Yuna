@@ -6,7 +6,7 @@
  *
  * Responsibility:
  * Evaluate supplied accepted findings, evidence coverage and a frozen rule revision to explain
- * what the conduct establishes.
+ * what the original captured conduct establishes. Later edit/deletion is not replacement evidence.
  *
  * Planned methods:
  * - evaluateRule: Input: rule criteria, supported facts and required coverage. Output:
@@ -26,5 +26,6 @@
  * Invariants:
  * Policy decides evidence meaning only. Application/dispatch services perform live authority,
  * revision, safety, target and capacity gates. Multiple confirmed rules can contribute to one ban;
- * repeated warnings do not themselves establish a violation.
+ * repeated warnings do not themselves establish a violation. Missing original capture, restricted
+ * content access or unattributed webhook/system content cannot become a human violation by inference.
  */

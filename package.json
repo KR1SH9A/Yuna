@@ -1,0 +1,26 @@
+{
+  "name": "yuna",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/tests/entities/*.test.js",
+    "test:db": "npm run build && node --test dist/tests/integration/entities.postgres.test.js",
+    "schema:sql": "npm run build --silent && node dist/src/platform/db/print-schema.js"
+  },
+  "dependencies": {
+    "@mikro-orm/core": "7.2.5",
+    "@mikro-orm/decorators": "7.2.5",
+    "@mikro-orm/postgresql": "7.2.5",
+    "reflect-metadata": "0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "typescript": "6.0.2"
+  }
+}

@@ -11,17 +11,22 @@
  * Planned methods:
  * - recoverExpiredAttempts: bounded due-work selection and current time -> recovery summary. Fence
  *   expired claims; preserve uncertain costs; permit bounded retries only for eligible tasks that
- *   have no usable stored result.
+ *   remain nonterminal. A terminal result with purged/unavailable payload goes to owner discard,
+ *   never another provider execution. Finalize expired nonterminal tasks with one expired result
+ *   and completion outbox.
  * - republishMissingWork: bounded eligible task/outbox selection -> publication work. Restore
  *   missing wake-up signals without duplicating logical tasks or revisions.
  * - redeliverUnacceptedResults: bounded stored-result selection -> completion signals. Redrive bot
- *   routing until the owner records acceptance/rejection; reuse persisted results instead of
+ *   routing until the owner records acceptance/discard; reuse persisted results instead of
  *   repeating inference after a result-commit crash.
  *
  * Boundaries/invariants:
- * Recovery creates fresh ORM contexts for bounded batches and uses short transactions. Recheck
+ * Recovery enters outside an active transaction, creates fresh ORM contexts for bounded batches
+ * and coordinates short local transactions with external publication. Recheck
  * cancellation, current eligibility and deadline before restoring work. No importing contexts,
  * advancing cases, selecting sanctions or resending Discord effects. Business owners reconcile
  * their own ambiguous external outcomes. Lease expiry does not prove that an earlier provider call
- * stopped or was unbilled.
+ * stopped or was unbilled. A worker-local unsupported kind/version is a routing mismatch, not
+ * deployment-wide evidence to PARK a task; fleet capability policy controls unsupported-work
+ * parking/resumption. A missing owner acceptor leaves completion pending without reopening inference.
  */

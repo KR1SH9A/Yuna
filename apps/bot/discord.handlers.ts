@@ -12,16 +12,19 @@
  * - onMessageCreated: Accept a Gateway message -> NormalizedDiscordMessageDto; record the durable
  *   intake snapshot and intended deliveries before routing to Moderation and Community. Intake is
  *   the proposed boundary in docs/ARCHITECTURE_PLAN.md, not implemented by this placeholder.
- * - onMessageUpdated: Accept a source update; route its revision to the owners of affected
- *   evidence and conversation work without inventing missing original content.
- * - onMessageDeleted: Route source IDs and deletion metadata; do not infer who deleted it.
+ * - onMessageUpdated: Record the observed current-source state and invalidate affected Community
+ *   work. Do not replace Moderation's original capture or reassess the edited body as original.
+ * - onMessageDeleted: Record source tombstones, including per-message entries for bulk deletion;
+ *   invalidate current-source work without erasing independently retained original evidence.
  * - onInteraction: Acknowledge or defer promptly; normalize to NormalizedInteractionDto; map the
  *   known command's arguments into its feature-owned request DTO and validate them at runtime.
  *   Use GuildLifecycleService.readInstallation and verified metadata to build TrustedCallerContext
  *   separately from user arguments.
  *   Invoke the named feature service, then serialize its public response DTO into the Discord reply.
- * - onGuildJoined: Notify GuildLifecycleService of a trusted installation event.
- * - onGuildRemoved: Notify GuildLifecycleService to suspend new work and begin cleanup.
+ * - onGuildJoined: Distinguish initial guild loading/reavailability from a verified new
+ *   installation. A GUILD_CREATE event alone does not require a fresh installation generation.
+ * - onGuildRemoved: Distinguish temporary unavailability from confirmed removal. Update
+ *   availability only for outages; confirmed removal begins cleanup for the exact installation.
  *
  * Collaborators:
  * DiscordInputNormalizer, feature-owned DTOs and explicitly exported context services. No context
@@ -35,4 +38,7 @@
  * pipe automatically runs for Discord events. Reject identity/authority fields in user arguments;
  * services recheck current authorization and business invariants. Keep handlers thin and split
  * them by feature only when the actual command set makes this file unwieldy.
+ * Interaction acknowledgment/defer must meet Discord's transport deadline before slow work.
+ * A guild-context interaction does not itself prove a current guild installation. Tokens remain
+ * in a short-lived protected transport continuation, never in Jobs payloads or audit records.
  */

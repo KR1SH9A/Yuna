@@ -11,11 +11,16 @@
  * - ReplyAudienceBinding: resolved destination, permitted visibility, source/provenance references
  *   and applicable privacy revisions. This is a current checked binding, not an arbitrary audience
  *   requested by a user.
+ * - ReplyDestination: discriminated channel_message or interaction_original binding. Channel
+ *   delivery carries its channel and explicit reply reference; interaction delivery carries its
+ *   application/interaction identity, protected continuation reference, token expiry and fixed
+ *   visibility. Plain interaction tokens never cross into Jobs, audit or logs.
  *
  * DTO locations:
  * - dto/conversation.dto.ts owns conversation/cancellation arguments and ConversationResultDto
  *   progress.
- * - dto/knowledge.dto.ts owns approve/retire/visible-lookup arguments and KnowledgeEntryDto views.
+ * - dto/knowledge.dto.ts owns approve/replace/visibility/retire/visible-lookup arguments and
+ *   KnowledgeEntryDto views.
  * - dto/reply-delivery.dto.ts owns delivery outcomes and bounded recovery summaries.
  *
  * Trusted and infrastructure values: Reuse TrustedCallerContext from Administration contracts. Bot

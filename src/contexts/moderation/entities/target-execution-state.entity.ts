@@ -1,33 +1,66 @@
-/**
- * Planned component: TargetExecutionState
- * Kind: Context-private entity
- * Owner: Moderation
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Serialize conflicting ban and unban work for the same guild/account across cases, retries and
- * staff actions.
- *
- * Planned fields:
- * guildId; targetUserId as composite key; generation; unresolvedActionId; revision; updatedAt.
- *
- * Planned methods:
- * - claim: Input: action reference and expected generation after the shared safety gate. Output:
- *   next target generation/reservation when no conflicting unresolved action exists.
- * - retainUnresolved: Input: matching action/generation and uncertainty cause. Output: continued
- *   exclusive unresolved reference; another case cannot overtake it.
- * - releaseResolved: Input: matching action/generation and established resolution. Output: cleared
- *   reservation with advanced generation, allowing newly authorized work.
- *
- * Collaborators/Boundaries:
- * Private context-owned persistence record. The owning service loads and persists it through
- * MikroORM in the caller's transaction. Transition methods operate on supplied values only; they
- * do not query, enqueue, or call external systems.
- *
- * Invariants:
- * Lease expiry never proves the old executor stopped. Only established resolution permits safe
- * release; serializing a database row cannot make Discord calls exactly once. Tenant references
- * must remain in one guild through database-enforced constraints. Internal IDs are UUIDs; Discord
- * IDs are strings. Row revision and conditional writes protect mutable transitions; entity checks
- * alone do not replace concurrency constraints.
- */
+import { nextCounter } from './moderation-values.js';
+import { Check, Entity, PrimaryKey, Property } from '@mikro-orm/decorators/legacy';
+import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, invariant } from '../../../platform/db/entity-values.js';
+
+export interface TargetExecutionStateInput { guildId: string; targetUserId: string; createdAt?: Date }
+
+/** This account gate deliberately spans installations; reinstall must not hide an uncertain ban. */
+@Check({ name: 'target_execution_state_check_1', expression: "(unresolved_action_id IS NULL) = (unresolved_installation_id IS NULL)" })
+@Check({ name: 'target_execution_state_check_2', expression: "generation >= 0 AND row_revision > 0" })
+@Entity({ tableName: 'target_execution_state' })
+export class TargetExecutionState {
+  @PrimaryKey({ type: 'text' }) readonly guildId: string;
+  @PrimaryKey({ type: 'text' }) readonly targetUserId: string;
+  @Property({ type: 'integer' }) generation = 0;
+  @Property({ type: 'uuid', nullable: true }) unresolvedActionId: string | null = null;
+  @Property({ type: 'uuid', nullable: true }) unresolvedInstallationId: string | null = null;
+  @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
+  @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
+
+  constructor(input: TargetExecutionStateInput) {
+    assertDiscordId(input.guildId);
+    assertDiscordId(input.targetUserId);
+    const at = input.createdAt ?? new Date();
+    assertDate(at, 'createdAt');
+    this.guildId = input.guildId;
+    this.targetUserId = input.targetUserId;
+    this.updatedAt = new Date(at);
+  }
+
+  claim(actionId: string, installationId: string, expectedGeneration: number, at: Date): number {
+    assertUuid(actionId);
+    assertUuid(installationId);
+    this.check(expectedGeneration, at);
+    invariant(this.unresolvedActionId === null, 'The target has an unresolved action');
+    this.unresolvedActionId = actionId;
+    this.unresolvedInstallationId = installationId;
+    this.generation = nextCounter(this.generation);
+    this.touch(at);
+    return this.generation;
+  }
+
+  retainUnresolved(actionId: string, expectedGeneration: number, at: Date): void {
+    this.check(expectedGeneration, at);
+    invariant(this.unresolvedActionId === actionId, 'The unresolved action does not own this target');
+    this.touch(at);
+  }
+
+  /** The caller supplies established resolution, never merely an expired lease or current ban state. */
+  releaseResolved(actionId: string, expectedGeneration: number, resolution: 'confirmed' | 'definitively_not_applied', at: Date): void {
+    this.check(expectedGeneration, at);
+    invariant(this.unresolvedActionId === actionId, 'The resolving action does not own this target');
+    invariant(resolution === 'confirmed' || resolution === 'definitively_not_applied', 'Resolution must be established');
+    this.unresolvedActionId = null;
+    this.unresolvedInstallationId = null;
+    this.generation = nextCounter(this.generation);
+    this.touch(at);
+  }
+
+  private check(expectedGeneration: number, at: Date): void {
+    assertNonNegativeInteger(expectedGeneration, 'expectedGeneration');
+    assertDate(at, 'at');
+    invariant(this.generation === expectedGeneration, 'Stale target generation');
+    invariant(at >= this.updatedAt, 'Transition time cannot move backwards');
+  }
+  private touch(at: Date): void { this.rowRevision = nextCounter(this.rowRevision); this.updatedAt = new Date(at); }
+}

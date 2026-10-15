@@ -12,12 +12,19 @@
  * - None. Data contracts and boundary validation schemas only.
  *
  * Planned values:
- * SourceProvenance: verified guild/channel/message identity, original author when established,
- * source kind, known source revision and source/capture timestamps. Missing attribution/revision
- * remains explicit. This is transport-derived provenance, not a human request or action grant.
+ * SourceProvenance: verified guild/channel/message identity; event kind; author kind
+ * (user/bot/webhook/system/unknown), attributable authorUserId when established and webhookId when
+ * present; sentAt, editedAt and capturedAt when known. Preserve Gateway sessionId/shardId/sequence
+ * when available and distinguish Gateway MESSAGE_CREATE capture from later update/REST reads.
+ * Transport sequence is optional replay provenance within a session, never a global message
+ * version. An original-capture reference identifies the actual retained create observation;
+ * a message locator, current fetch or reporter statement cannot establish original content.
+ * Installation identity is supplied by Administration, not invented by the Discord payload.
  * ExecutionFacts: current permission/hierarchy/target facts with read time and scope.
  * DiscordOperationResult: confirmed response, definitive failure, or unknown outcome; include
- * returned object/request references when available.
+ * HTTP status and returned object/request references when available. Successful ban, unban and
+ * kick calls return 204 with no action object/ID; returnedExternalId therefore remains nullable.
+ * A local correlation/audit-reason reference is not a Discord-returned action ID.
  *
  * DTO locations (definitions live there, not duplicated here):
  * dto/normalized-message.dto.ts: NormalizedDiscordMessageDto.
@@ -25,6 +32,8 @@
  * dto/normalized-interaction.dto.ts: NormalizedInteractionDto with separate untrusted arguments.
  *
  * Invariants:
- * Snowflake IDs remain strings. Message claims and model text do not establish identity. No SDK
- * instances, ORM entities, or binary media in these boundary values.
+ * Snowflake IDs remain decimal strings, never JavaScript numbers. Preserve absent, null and empty
+ * values where their meanings differ. Message claims and model text do not establish identity;
+ * a webhook's user-shaped author is not a human account. No SDK instances, ORM entities, or binary
+ * media in these boundary values. Display names are snapshots, never identity keys.
  */

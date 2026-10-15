@@ -1,11 +1,5 @@
-# Planned verification
+# Verification
 
-This directory contains test plans only. There are no executable tests, test framework dependencies or claims of passing application behavior.
+`npm test` compiles the repository and runs focused entity behavior tests using Node's test runner. `npm run test:db` starts a private temporary PostgreSQL cluster and checks real schema creation, round-trip persistence, tenant constraints, original evidence retention and competing updates. PostgreSQL `initdb`, `pg_ctl` and `psql` must be on PATH. The test never uses an existing database.
 
-| Directory | Intended checks |
-| --- | --- |
-| `boundaries` | Context ownership, forbidden imports, provider isolation and dependency cycles. |
-| `integration` | PostgreSQL/queue transactions, worker access, result acceptance, recovery and deletion. |
-| `scenarios` | End-to-end business decisions and observable effects with fake providers and Discord. |
-
-Add focused executable checks with the behavior they verify. Use real PostgreSQL/pg-boss for concurrency and transaction guarantees, deterministic fakes for provider/Discord outcomes, and a test guild for external API behavior. Keep fixtures attributable and tenant-scoped. Do not add tests that merely assert this scaffold's placeholder text.
+These tests verify the entity layer. Services, queue workers, provider calls and Discord effects remain unimplemented. The boundary and scenario documents describe that future verification; passing entity tests does not claim a working bot.

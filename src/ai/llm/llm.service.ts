@@ -12,8 +12,7 @@
  *   preserving original source references and missing context.
  * - generateReply: Receive ReplyGenerationInput; return a candidate reply and available
  *   usage/completion information within supplied output constraints.
- * - explainFindings: Receive accepted findings and explanation constraints; return explanatory
- *   prose without changing those findings.
+ * Explanation is deferred until a feature owns a complete request/acceptance route.
  *
  * Boundaries:
  * Validate provider outputs and normalize errors; never call Jev or choose a next stage. No access

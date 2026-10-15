@@ -11,7 +11,8 @@
  *
  * Planned methods:
  * - prepareKick: Input: exact internally authorized kick operation, target and current
- *   StaffRequestAuthority. Output: ModerationActionOutcomeDto with READY intent or denial.
+ *   StaffRequestAuthority. Output: ModerationActionOutcomeDto with READY intent or denial; persist
+ *   immutable guild/installation, staff request origin, exact payload and correlation reference.
  * - dispatch: Input: trusted kick intent reference. Output: ModerationActionOutcomeDto. Read
  *   current platform facts, claim under current safety/authority/target checks and perform the
  *   request after commit.
@@ -25,10 +26,14 @@
  *   Output: ModerationRecoveryResultDto. Select private owned kick work; recheck ready-intent
  *   authority and reconcile ambiguous attempts without treating absence as completion.
  *
- * Collaborators/Boundaries: Uses private moderation records and owner-controlled MikroORM queries,
- * Administration public authority/safety APIs, Jobs/Usage/Audit and narrow Discord or artifact
- * operations as needed. Never queries personal Memory or invokes provider SDKs. Participates in
- * the caller's fresh ORM context; no independent nested commits.
+ * Transaction contract: prepareKick and recordOutcome join/start a short local transaction with
+ * no external I/O. dispatch, reconcile and recoverDueActions enter outside an active transaction;
+ * coordinate remote reads/calls around short claim/outcome transactions using a fresh ORM context.
+ * No independent nested commits or external I/O inside a caller transaction.
+ *
+ * Collaborators/Boundaries: Uses private moderation records, Administration authority/safety APIs,
+ * Audit and narrow Discord reads/effects. Native kick delivery does not acquire Jobs/Usage/provider
+ * dependencies without an actual operation requiring them.
  *
  * DTO ownership: The optional public request belongs to dto/staff-sanction.dto.ts and
  * StaffModerationService. This effect coordinator returns dto/action-outcome.dto.ts results after
@@ -40,5 +45,8 @@
  * generic ORM CRUD.
  *
  * Invariants: Never translate an explicit kick into a ban. Lease expiry or target absence is not
- * permission for a blind retry.
+ * permission for a blind retry. Target is a Discord user ID retained independently of current
+ * membership; dispatch verifies membership/permissions/hierarchy at that time. Kick 204 success
+ * carries no external action ID. Exact operation payload and correlation remain immutable, and
+ * recovery scopes work by guild plus immutable installationId.
  */

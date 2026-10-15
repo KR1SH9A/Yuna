@@ -12,12 +12,15 @@
  *   or an explicit unsupported-version outcome.
  *
  * Planned entries:
- * Observation, structured assessment, reply generation, explanation and enabled embedding work.
+ * Observation, structured assessment, reply generation and enabled staged fact/embedding work.
+ * No explanation route is admitted until an owner defines its requester and acceptor.
  * Capability schemas remain separate; no universal payload with optional fields.
  *
  * Boundaries:
  * Static application composition, not runtime plugin discovery or arbitrary dispatch. Unknown
  * versions must never be guessed, interpreted as source code, or silently upgraded.
+ * Local incompatibility is distinct from missing fleet support; only the latter justifies
+ * deliberately parking compatible persisted work at the deployment/admission boundary.
  * This file does not require an injectable service class. The worker composition root constructs
  * the known handler mapping; the lookup is not a DI provider or a new workflow layer.
  */

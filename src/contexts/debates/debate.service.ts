@@ -32,11 +32,15 @@
  *   required by the selected evaluation policy.
  * - acceptEvaluation: Input: stored expected task results. Output: accepted criterion findings,
  *   evidence-checked deterministic totals and outcome, or rejection/uncertainty. Accept once under
- *   the frozen binding.
+ *   the frozen binding and retain owner-owned output sufficient for publication after Jobs cleanup.
  * - publishResult: Input: accepted evaluation and current authorized audience/session state.
  *   Output: authorized DebateResultResponseDto and publication outcome or tracked unresolved
  *   delivery. Map outward content from accepted owner records, verify actual references and
- *   current destination before sending outside transactions.
+ *   current destination before sending outside transactions. Claim with bounded attempt metadata
+ *   on DebateEvaluation and record outcome in a separate local transaction; an unknown send never
+ *   becomes a blind resend merely because a claim expired.
+ * - recoverPublications: Input: bounded due evaluation/attempt references. Output: reconciled known
+ *   outcomes or tracked uncertainty/next due time under the same publication rules.
  * - cancelSession: Input: CancelDebateSessionRequestDto plus separate TrustedCallerContext for
  *   human cancellation, or an owner-verified internal consent cause and expected revision.
  *   Output: DebateSessionResponseDto for the interaction, or internal cancellation progress.
