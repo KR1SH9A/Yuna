@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from '@jest/globals';
 import { GuildInstallation } from '../../src/contexts/administration/entities/guild-installation.entity.js';
 import { GuildSafetyState } from '../../src/contexts/administration/entities/guild-safety-state.entity.js';
 import { ActionPlan, type GovernedOperation } from '../../src/contexts/administration/entities/action-plan.entity.js';

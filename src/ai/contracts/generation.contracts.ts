@@ -1,23 +1,21 @@
 /**
- * Planned component: GenerationContracts
- * Kind: Versioned capability schemas
- * Owner: AI contracts
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Describe prepared reply-generation inputs and results.
- *
- * Planned methods:
- * - None. Plain values and boundary validation schemas only.
- *
- * Planned values:
- * ReplyGenerationInput: current source, authorized context/knowledge/memory, destination audience,
- * output constraints and template version.
- * ReplyGenerationResult: generated text, supporting references when requested,
- * completion/uncertainty and measured usage metadata.
- * Explanation schemas are deferred until a feature owns their requester and acceptor.
- *
- * Invariants:
- * Feature owners select all disclosed context before inference. Destination and identities are
- * server-owned; model text does not redirect delivery.
+ * Conversation generation v1. The feature owner selects the text and optional previous Yuna
+ * reply before inference. Knowledge, memory, citations and observation remain future capabilities.
+ * These values contain no destination authority; generated text cannot redirect delivery.
  */
+export interface ReplyGenerationInput {
+  readonly text: string;
+  readonly previousReply?: string;
+  readonly maxOutputTokens: number;
+}
+
+/** Validated provider measurements are token counts, not a computed monetary charge. */
+export interface ReplyGenerationResult {
+  readonly text: string;
+  readonly providerRequestId: string;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly truncated: boolean;
+}

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from '@jest/globals';
 import { randomUUID } from 'node:crypto';
 import { IntakeEvent } from '../../src/platform/intake/entities/intake-event.entity.js';
 import { IntakeDelivery } from '../../src/platform/intake/entities/intake-delivery.entity.js';

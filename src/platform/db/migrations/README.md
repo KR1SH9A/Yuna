@@ -1,7 +1,14 @@
-# Deployment migrations remain pending
+# Explicit database preparation
 
-Entity mappings and `../schema-constraints.ts` now define a testable PostgreSQL schema. `npm run schema:sql` prints the core schema; `npm run schema:sql -- --include-staged` includes all 40 models. The schema has been designed for explicit migration review, never application-startup synchronization. No deployment migration has been applied.
+`npm run db:prepare` builds and runs `apps/admin/cli.ts` with `.env.admin`. The existing database must be owned by the supplied administrator, which needs permission to create login roles. See [local setup](../../../../docs/LOCAL_TEST.md).
 
-Use the combined generator: bare MikroORM schema generation omits the additional scalar-ID foreign keys and cross-row guards. Keep these constraints in reviewed migration changes when models change. Database tests apply the combined schema to an isolated temporary PostgreSQL cluster.
+`prepareDatabase` holds a transaction-scoped advisory lock, validates the applied migration prefix/checksums, applies missing SQL and records it in `yuna_schema_migrations`. Role/password changes and grants share the transaction. Re-running preserves rows, verifies migration identity and restores the reviewed grants; checksum drift aborts. Never edit an already deployed migration—add a new version instead.
 
-Before deploying a service slice, add versioned migrations, restricted bot/worker roles and the selected queue schema. Scope schema deployment to enabled features; optional governance, Memory and Debates remain staged. Runtime workers must not acquire broad prepared-input or business-table access merely to make startup succeed.
+1. `001-core.sql` snapshots the combined core entity schema plus scoped foreign keys and cross-row guards. It includes future core storage without enabling those features.
+2. `conversation-worker.sql` adds the restricted claim/release/start/finish/recover operations. The deferred execution-consistency trigger runs with trusted-owner privileges and a fixed search path so restricted worker commits can enforce it without table privileges.
+
+`yuna_bot` receives CRUD on the enabled conversation/platform tables. `yuna_worker` receives only the designated worker-function EXECUTE grants and schema usage. Runtime roles must not own database objects, have elevated flags or role memberships. PUBLIC schema creation and direct execution of internal helpers/guards are revoked. Unrelated inherited table/column grants cause setup to fail rather than silently alter unrelated objects.
+
+Runtime bot/worker startup never executes DDL. The worker discovers no business entity metadata. SQL functions use a fixed trusted search path and recheck task/source/safety authority before disclosure and dispatch.
+
+Use `npm run schema:sql` for model/schema review; it includes the additional constraints that bare ORM schema generation would omit. The optional staged schema remains a separate future deployment decision. Migration and worker tests use temporary private PostgreSQL clusters and actual restricted login roles.

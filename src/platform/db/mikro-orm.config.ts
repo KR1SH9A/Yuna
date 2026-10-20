@@ -6,8 +6,9 @@ export function entityOrmConfig(options: { clientUrl?: string; includeStaged?: b
   return defineConfig({
     driver: PostgreSqlDriver,
     entities: options.includeStaged ? allEntities : coreEntities,
-    dbName: 'yuna',
-    ...(options.clientUrl ? { clientUrl: options.clientUrl } : {}),
+    // An explicit dbName takes precedence over clientUrl in MikroORM. Keep the default only
+    // for metadata/schema tooling so a runtime URL can select its actual database.
+    ...(options.clientUrl ? { clientUrl: options.clientUrl } : { dbName: 'yuna' }),
     allowGlobalContext: false,
   });
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from '@jest/globals';
 import { AiTask } from '../../src/platform/jobs/entities/ai-task.entity.js';
 import { OutboxEntry } from '../../src/platform/jobs/entities/outbox-entry.entity.js';
 import { PreparedInput } from '../../src/platform/jobs/entities/prepared-input.entity.js';

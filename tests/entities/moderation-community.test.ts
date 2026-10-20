@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
-import test, { before, after } from 'node:test';
+import { afterAll, beforeAll, test } from '@jest/globals';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { EvidenceRevision, type EvidenceRevisionInput } from '../../src/contexts/moderation/entities/evidence-revision.entity.js';
 import { ModerationFinding } from '../../src/contexts/moderation/entities/moderation-finding.entity.js';
@@ -11,10 +11,10 @@ import { ReplyDelivery, type ReplyDeliveryInput } from '../../src/contexts/commu
 import type { AudienceBinding, InteractionContinuation } from '../../src/contexts/community/entities/community-values.js';
 
 let metadataOrm: MikroORM;
-before(() => {
+beforeAll(() => {
   metadataOrm = new MikroORM({ entities: [ModerationAction, ModerationFinding], dbName: 'entity_metadata_only' });
 });
-after(async () => { await metadataOrm?.close(); });
+afterAll(async () => { await metadataOrm?.close(); });
 
 const createdAt = new Date('2026-10-15T00:00:00Z');
 const at = (seconds: number): Date => new Date(createdAt.getTime() + seconds * 1000);

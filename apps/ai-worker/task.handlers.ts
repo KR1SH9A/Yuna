@@ -1,32 +1,43 @@
-/**
- * Planned component: AiTaskHandlers
- * Kind: Thin worker entry points
- * Owner: AI worker application
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Execute one prepared capability call and store its bound result. These named handlers may share
- * small technical helpers without a workflow engine.
- *
- * Planned methods:
- * - handleObservation: Receive a task ID; run LlmService.observeContent for its input.
- * - handleAssessment: Receive a task ID; run JevService.assessQuestions for its input.
- * - handleReplyGeneration: Receive a task ID; run LlmService.generateReply.
- * - handleEmbedding: Receive a task ID; run EmbeddingService.embedTexts when enabled.
- *
- * Shared execution steps:
- * Validate TaskSignalDto; read stored metadata through WorkerTaskStore.readTaskDescriptor, then
- * resolve the known handler through the static registry before creating a provider attempt.
- * A local unsupported version must not park work that another deployed compatible worker can run.
- * Claim work, check deadline, pass the prepared-input release gate and validate the released
- * capability payload against its stored schema version. Use the task's
- * existing reservation for the first attempt, perform inference outside a transaction, and record
- * usage plus a schema-validated conditional terminal result under the active attempt generation.
- * Intermediate retryable failures finish attempts without creating owner-visible results. Reserve
- * additional bounded retry allowance only when needed; restricted worker operations use stored policy/limits
- * rather than a worker-selected budget. Never reserve the first attempt twice.
- *
- * Boundaries:
- * Call one capability per task; never start the next moderation or conversation stage. Retries can
- * incur additional provider cost and cannot overwrite newer attempts.
- */
+import { LlmError, type LlmService } from '../../src/ai/llm/llm.service.js';
+import type { WorkerTaskStore } from '../../src/platform/jobs/worker-task.store.js';
+
+/** One accounted attempt; provider I/O runs only after a committed claim/disclosure/dispatch gate. */
+export class AiTaskHandlers {
+  constructor(private readonly store: Pick<WorkerTaskStore, 'claimNext' | 'releasePreparedInput' | 'recordProviderStart' | 'recordResult'>,
+    private readonly llm: Pick<LlmService, 'generateReply'>,
+    private readonly executorId: string, private readonly model: string, private readonly timeoutMs: number) {}
+
+  /** Return whether a task was claimed. Errors persisting results never cause a provider retry. */
+  async runOne(signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    const claim = await this.store.claimNext(this.executorId, this.model);
+    if (!claim) return false;
+    const remaining = Math.min(new Date(claim.deadline).getTime(), new Date(claim.leaseUntil).getTime()) - Date.now() - 500;
+    if (remaining <= 0 || signal.aborted) {
+      await this.store.recordResult(claim, { outcome: 'failure', reason: 'cancelled_before_release' });
+      return true;
+    }
+    const input = await this.store.releasePreparedInput(claim);
+    if (!input || signal.aborted || !await this.store.recordProviderStart(claim)) {
+      await this.store.recordResult(claim, { outcome: 'failure', reason: 'disclosure_denied' });
+      return true;
+    }
+    const dispatchRemaining = Math.min(new Date(claim.deadline).getTime(), new Date(claim.leaseUntil).getTime()) - Date.now() - 500;
+    if (dispatchRemaining <= 0 || signal.aborted) {
+      await this.store.recordResult(claim, { outcome: 'failure', reason: 'cancelled_before_provider' });
+      return true;
+    }
+    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(dispatchRemaining, this.timeoutMs)))]);
+    let result;
+    try { result = await this.llm.generateReply(input, requestSignal); }
+    catch (error) {
+      await this.store.recordResult(claim, { outcome: error instanceof LlmError && !error.costMayHaveBeenIncurred ? 'failure' : 'uncertain',
+        reason: error instanceof LlmError ? error.code : 'provider_failure' });
+      console.warn(`ai-worker: generation ended (${error instanceof LlmError ? error.code : 'provider_failure'}).`);
+      return true;
+    }
+    await this.store.recordResult(claim, { outcome: 'success', reason: 'generated', payload: result, providerRequestId: result.providerRequestId,
+      usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens, totalTokens: result.totalTokens } });
+    return true;
+  }
+}

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, test } from 'node:test';
+import { afterAll, beforeAll, test } from '@jest/globals';
 import { randomUUID } from 'node:crypto';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { entityOrmConfig } from '../../src/platform/db/mikro-orm.config.js';
@@ -24,16 +24,16 @@ const at = (seconds: number) => new Date(Date.parse('2026-10-15T10:00:00Z') + se
 let database: ReturnType<typeof temporaryPostgres>;
 let orm: MikroORM;
 
-before(async () => {
+beforeAll(async () => {
   database = temporaryPostgres();
   orm = new MikroORM({ ...entityOrmConfig({ includeStaged: true }), ...database.options });
   await orm.connect();
   database.applySchema(await createEntitySchemaSql(orm));
-});
-after(async () => {
+}, 60_000); // initdb, server startup and schema creation need more than Jest's default hook limit.
+afterAll(async () => {
   if (orm) await orm.close(true);
   database?.close();
-});
+}, 30_000);
 
 function installation(guildId = '900000000000000001') {
   return new GuildInstallation({ guildId, generation: 1, registeredAt: at(0), createdAt: at(0), featureAdmission: { moderation: 'enabled' } });
