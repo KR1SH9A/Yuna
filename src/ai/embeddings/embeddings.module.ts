@@ -1,16 +1,4 @@
-/**
- * Planned component: EmbeddingsModule
- * Kind: Optional provider capability module
- * Owner: AI worker / embeddings
- * Status: Design scaffold only; not implemented. Used when Memory ships.
- *
- * Responsibility:
- * Register EmbeddingService and its selected provider configuration.
- *
- * Planned methods:
- * - None. Dependency registration only when implemented.
- *
- * Boundaries:
- * Expose only the embedding capability to worker handlers. No Memory entity/repository imports or
- * automatic fact persistence.
- */
+/** Optional embedding exports; construct after owner admission, without enabling Memory disclosure. */
+export { EmbeddingService, EmbeddingError } from './embedding.service.js';
+export type { EmbeddingErrorCode } from './embedding.service.js';
+export type { EmbeddingInput, EmbeddingResult, EmbeddingProviderConfig } from '../contracts/embedding.contracts.js';

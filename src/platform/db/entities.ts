@@ -1,3 +1,4 @@
+/** Register baseline persistence entities separately from feature-specific entities so schema discovery is explicit. */
 import { GuildInstallation } from '../../contexts/administration/entities/guild-installation.entity.js';
 import { GuildSafetyState } from '../../contexts/administration/entities/guild-safety-state.entity.js';
 import { CapabilityGrant } from '../../contexts/administration/entities/capability-grant.entity.js';
@@ -49,13 +50,14 @@ export const coreEntities = [
   IntakeEvent, IntakeDelivery,
   ArtifactRecord,
   AuditEntry,
+  MemoryScope, MemoryFact, MemoryDeletionRequest,
+  DebateSession, ParticipantConsent, TranscriptEntry, TranscriptSnapshot, RubricRevision, DebateEvaluation,
 ];
 
 /** Opt-in metadata does not enable staged product workflows or deploy their tables. */
 export const stagedEntities = [
   ActionPlan, PlanApproval, CustodianEnrollment,
-  MemoryScope, MemoryFact, FactEmbedding, MemoryDeletionRequest,
-  DebateSession, ParticipantConsent, TranscriptEntry, TranscriptSnapshot, RubricRevision, DebateEvaluation,
+  FactEmbedding,
 ];
 
 export const allEntities = [...coreEntities, ...stagedEntities];

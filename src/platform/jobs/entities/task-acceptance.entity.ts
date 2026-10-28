@@ -1,3 +1,4 @@
+/** Record the owner’s immutable acceptance or discard of a terminal task result in the owner transaction. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../db/entity-values.js';
@@ -35,6 +36,7 @@ export class TaskAcceptance extends ScopedEntity {
   @Property({ type: 'text' }) readonly reason: string;
   @Property({ type: 'datetime', columnType: 'timestamptz' }) readonly acknowledgedAt: Date;
 
+  /** Record one immutable accepted or discarded decision with the exact task result and owner bindings. */
   constructor(input: TaskAcceptanceInput) {
     super(input);
     assertUuid(input.taskId);

@@ -1,8 +1,10 @@
 # Yuna entity model plan
 
-This reference defines the 40 implemented entity models, their writers, keys, lifecycles and data ownership. Entity classes, local transition methods, PostgreSQL mappings and executable tests are implemented. Service orchestration remains planned, and no deployment migrations have been applied. Shared SQL constraints supplement ORM mappings; generate them through `createEntitySchemaSql`, not the ORM generator alone.
+This reference preserves the original 40-concept entity design, its ownership/lifecycle rules and later runtime extensions. Entity classes, PostgreSQL mappings, transition guards and scoped constraints are executable. Community/Knowledge, Administration, original-text Moderation, explicit private Memory and consented Debates now have service orchestration, restricted task routes where needed, retention/removal paths and versioned migrations. This document does not attest which migrations an operator has applied to a live database. Shared SQL constraints supplement ORM mappings; generate them through `createEntitySchemaSql`, not the ORM generator alone.
 
-The first release covers guild message moderation, Community replies, authenticated staff operations, durable execution and cleanup. Memory, Debates, multi-custodian governance and kick remain staged. The companion [architecture plan](ARCHITECTURE_PLAN.md) defines execution rules; [DTO and module reference](DTO_REFERENCE.md) defines application boundaries.
+The selected Memory route persists consent, private explicitly submitted facts and deletion receipts; `FactEmbedding` remains a future model without an enabled semantic path. Debates activate their six scoped models for explicit submissions, frozen typed scoring and publication. Optional multi-custodian governance, kick and artifact-backed media inspection remain staged. Runtime additions also include natural-key `user_usage_limit` preferences and target execution serialization. See [architecture](ARCHITECTURE_PLAN.md), [DTO boundaries](DTO_REFERENCE.md) and [local setup](LOCAL_TEST.md).
+
+Current cleanup erases payloads and eligible resolved workflow/accounting metadata. Minimal knowledge lineage, consent/deletion/publication receipts and unresolved effect/accounting references can retain explicit dispositions. Target field descriptions below cover optional extensions as well as active routes; they are not a promise of semantic memory, inferred facts, media capture or universal physical deletion.
 
 ## Selected modeling decisions
 
@@ -391,7 +393,7 @@ Commit the evidence/finding bindings and action intent before calling Discord; r
 
 **Retention:** keep references, units, currency/pricing and evidence needed to explain billed amounts, not private prompts. Scope accounting queries by applicable guild/provider/window, including prior installation liabilities where their window still applies; authority queries still require the exact installation.
 
-## Memory — staged; no initial migrations
+## Memory — explicit private storage active; inference/indexing remain optional
 
 ### MemoryScope
 
@@ -433,7 +435,7 @@ Commit the evidence/finding bindings and action intent before calling Discord; r
 
 **Lifecycle/retention:** invalidate disclosure first, then asynchronously remove Memory and owner-managed copies. `recordOwnerProgress` is idempotent per owner/generation; `markCompleted` checks captured requirements; `scheduleRetry` records bounded due time and failure reason. Independently retained moderation evidence gets its own stated disposition rather than being silently erased or called forgotten. Completion does not mean recall of provider input or already-published messages. Retain cleanup evidence through its audit/replay needs, then remove identifiers under policy.
 
-## Debates — staged; no initial migrations
+## Debates — consented explicit-submission scoring and publication active
 
 ### DebateSession
 
@@ -493,7 +495,7 @@ Commit the evidence/finding bindings and action intent before calling Discord; r
 
 **Identity/constraints:** unique `(installationId, guildId, acceptanceOperationKey)`; exact frozen transcript/rubric expected by session must match. Accepted evaluation fields immutable; references point into the declared snapshot. Published requires a confirmed message ID/time; unknown has no invented success. Destination comes from owner authorization, not model output.
 
-**Lifecycle/retention:** deterministic acceptance stores enough owner-owned content to publish after Jobs payload cleanup. Publication uses the same explicit outside-transaction send/unknown-outcome discipline as Community; use `claimPublication`, `recordPublication`, `recordPublicationUncertainty` and `schedulePublicationRecovery` with current bounded attempt metadata here until actual requirements justify a dedicated delivery entity. No blind retry after unknown send, no score-based sanction/grant. Retention purges score narrative/citations/publication content as declared; unsent publication invalidates first, unknown sends still need bounded reconciliation. Full publication retry policy is a prerequisite before Debates ships, not an excuse to add speculative infrastructure now.
+**Lifecycle/retention:** deterministic acceptance stores enough owner-owned content to publish after Jobs payload cleanup. Publication uses the same explicit outside-transaction send/unknown-outcome discipline as Community; use `claimPublication`, `recordPublication`, `recordPublicationUncertainty` and `schedulePublicationRecovery` with current bounded attempt metadata here until actual requirements justify a dedicated delivery entity. No blind retry after unknown send, no score-based sanction/grant. Retention purges score narrative/citations/publication content as declared; unsent publication invalidates first, unknown sends still need bounded reconciliation. The active publication route sends once, rejects definitive pre-send failures and reconciles unknown sends without retrying them; it does not add a general retry framework.
 
 ## Artifacts and audit
 
@@ -528,7 +530,7 @@ Commit the evidence/finding bindings and action intent before calling Discord; r
 Entity files stay under their owning `entities/` directories. IntakeEvent/IntakeDelivery live under `src/platform/intake`; ArtifactRecord and AuditEntry under their platform owners. Core and staged registration are explicit in `src/platform/db/entities.ts`. GuildSafetyState uses a surrogate UUID plus unique installation/guild scope. FactEmbedding currently maps a validated finite JSONB numeric array; no vector index or semantic query is enabled. Optional models need no deployment migrations before their feature is selected.
 
 1. Define scalar types, nullable meanings, composite tenant keys and the original-only evidence rule. Align entity/service comments and DTO terminology with this plan.
-2. Implement one complete Community slice with real constraints: intake → request → task/attempt/result → accepted owner content → delivery → filtered status. Delete the Jobs payload after acceptance in the verification case.
+2. Preserve the implemented Community slice and extend its race/rollback verification: intake → request → task/attempt/result → accepted owner content → delivery → filtered status. Delete the Jobs payload after acceptance in the verification case.
 3. Add original-only Moderation with immutable capture/policy bindings, deduplicated reports, distinct staff actions and target reconciliation.
 4. Implement retention/removal and accounting for every enabled owner before release. Actual durations, byte limits, budgets, maximum retries and overload thresholds remain explicit configuration decisions; this plan does not invent product numbers.
 5. Add each staged feature only with its full acceptance, accepted-data ownership and cleanup paths.

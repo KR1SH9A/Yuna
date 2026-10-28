@@ -1,29 +1,37 @@
-/**
- * Planned component: NormalizedInteractionDto
- * Kind: Normalized interaction envelope DTO
- * Owner: Discord boundary
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Describe a verified interaction before a known feature operation parses its arguments.
- *
- * Planned fields:
- * context: InteractionContextDto; known interaction/command identifier; bounded untrusted option
- * values. A command identifier is resolved through explicit bot wiring, never dynamic invocation.
- *
- * Producer and consumers:
- * DiscordInputNormalizer.normalizeInteraction -> DiscordHandlers.onInteraction -> the selected
- * feature-owned request DTO. The feature DTO owns its operation-specific validation rules.
- *
- * Validation:
- * Validate the envelope and supported command before dispatch; parse only allowlisted argument
- * fields. Reject unexpected privileged fields. Perform actual runtime validation in the Discord
- * handler path; TypeScript annotations or a DTO filename alone do not validate an event.
- *
- * Planned methods:
- * None. Plain values and validation specification only.
- *
- * Invariants:
- * Acknowledgment/defer belongs to transport handling. Services decide authorization and business
- * eligibility. Do not carry SDK interactions, ORM entities, bot tokens or provider clients.
- */
+/** Registered command capabilities and validated discriminated inputs; no tokens or asserted authority. */
+import type { DiscordCommandIdentity } from './interaction-context.dto.js';
+
+/** Explicit command choices; broad administration enrollment can only come from owner bootstrap. */
+export const discordGrantCapabilities = [
+  'guild.pause', 'guild.resume', 'guild.configure', 'community.configure', 'knowledge.manage',
+  'moderation.ban', 'moderation.unban', 'moderation.kick',
+] as const;
+
+/** Sanitized, immutable command data. Tokens, SDK objects, roles and asserted authority never cross ingress. */
+export type NormalizedAdministrationCommand = import('../knowledge-commands.js').NormalizedKnowledgeCommand
+  | import('../memory-commands.js').NormalizedMemoryCommand | import('../debate-commands.js').NormalizedDebateCommand | DiscordCommandIdentity & (
+  | { readonly command: 'status' | 'bootstrap' | 'configure' | 'usage' | 'limit-clear'; readonly arguments: Readonly<Record<string, never>> }
+  | { readonly command: 'action'; readonly arguments: { readonly actionId: string } }
+  | { readonly command: 'limit'; readonly arguments: { readonly dailyAttemptLimit?: number; readonly dailyBudget?: { readonly amount: string; readonly currency: string } } }
+  | { readonly command: 'remove'; readonly arguments: { readonly expectedInstallationRevision: number } }
+  | { readonly command: 'ban'; readonly arguments: { readonly targetUserId: string; readonly reason: string; readonly deleteMessageSeconds: number } }
+  | { readonly command: 'unban' | 'kick'; readonly arguments: { readonly targetUserId: string; readonly reason: string } }
+  | { readonly command: 'report'; readonly arguments: { readonly channelId: string; readonly messageId: string; readonly allegation: string } }
+  | { readonly command: 'grant'; readonly arguments: {
+    readonly granteeUserId: string;
+    readonly capability: typeof discordGrantCapabilities[number];
+    readonly scope: { readonly channelIds: readonly string[]; readonly targetUserIds: readonly string[] };
+    readonly sourceOperationKey: string;
+    readonly expiresAt: string | null;
+  } }
+  | { readonly command: 'revoke'; readonly arguments: {
+    readonly grantId: string; readonly expectedAuthorityRevision: number;
+    readonly expectedRowRevision: number; readonly reasonCode: string;
+  } }
+  | { readonly command: 'pause'; readonly arguments: { readonly expectedSafetyRevision: number; readonly reasonCode: string } }
+  | { readonly command: 'resume'; readonly arguments: { readonly expectedSafetyRevision: number } }
+  | { readonly command: 'channel-status'; readonly arguments: { readonly channelId: string } }
+  | { readonly command: 'channel'; readonly arguments: {
+    readonly channelId: string; readonly mode: 'silent' | 'direct'; readonly expectedRowRevision: number;
+  } }
+);

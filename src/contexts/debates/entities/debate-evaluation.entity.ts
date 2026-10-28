@@ -1,3 +1,4 @@
+/** Preserve accepted Debate scores separately from publication claims and uncertain delivery outcomes. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -65,6 +66,7 @@ export class DebateEvaluation extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Validate and copy immutable identity, source bindings and retention before creating this record. */
   constructor(input: DebateEvaluationInput) {
     super(input);
     assertUuid(input.sessionId);
@@ -77,7 +79,7 @@ export class DebateEvaluation extends ScopedEntity {
     input.publicationDestination.allowedMentionUserIds.forEach(assertDiscordId);
     invariant(input.acceptanceOperationKey.length > 0 && !!input.acceptedResults.original, 'Evaluation acceptance identity and original result are required');
     invariant(input.purgeAfter > input.acceptedAt, 'Evaluation retention is invalid');
-    invariant(input.criterionScores.length > 0, 'Accepted scores are required');
+    invariant(input.criterionScores.length > 0 || input.outcome.kind === 'uncertain', 'Accepted scores are required');
     const scoreKeys = new Set<string>();
     for (const score of input.criterionScores) {
       assertDiscordId(score.participantId);
@@ -91,7 +93,7 @@ export class DebateEvaluation extends ScopedEntity {
       assertDiscordId(participantId);
       invariant(/^\d+(?:\.\d+)?$/.test(total), 'Totals must use exact nonnegative decimals');
     }
-    invariant(Object.keys(input.totals).length > 0, 'Deterministically calculated totals are required');
+    invariant(Object.keys(input.totals).length > 0 || input.outcome.kind === 'uncertain', 'Deterministically calculated totals are required');
     if (input.outcome.kind === 'winner') {
       assertDiscordId(input.outcome.userId);
       invariant(Object.hasOwn(input.totals, input.outcome.userId), 'Winner must be an evaluated participant');
@@ -133,6 +135,7 @@ export class DebateEvaluation extends ScopedEntity {
     return generation + 1;
   }
 
+  /** Persist dispatch intent before external I/O so a crash cannot imply permission to resend. */
   markPublicationSent(generation: number, at: Date): void {
     this.assertAttempt(generation);
     invariant(this.publicationState === 'claimed', 'Publication is not claimed');
@@ -141,6 +144,7 @@ export class DebateEvaluation extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Record positive matching delivery evidence, including evidence recovered after an unknown outcome. */
   recordPublication(generation: number, messageId: string, at: Date): void {
     this.assertAttempt(generation);
     assertDiscordId(messageId);
@@ -154,6 +158,7 @@ export class DebateEvaluation extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Retain an unresolved send as unknown; it must be reconciled rather than blindly retried. */
   recordPublicationUncertainty(generation: number, reasonCode: string, at: Date): void {
     this.assertAttempt(generation);
     invariant(this.publicationState === 'claimed' || this.publicationState === 'unknown', 'Publication is not unresolved');
@@ -175,6 +180,7 @@ export class DebateEvaluation extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Schedule bounded recovery without treating an unknown send as a failed send. */
   schedulePublicationRecovery(generation: number, nextAttemptAt: Date, at: Date): void {
     this.assertAttempt(generation);
     invariant(this.publicationState === 'unknown' || this.publicationState === 'failed', 'Publication is not recoverable');
@@ -185,6 +191,7 @@ export class DebateEvaluation extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Cancel an unsent publication; already dispatched work must retain its unresolved outcome. */
   cancelPublication(at: Date): void {
     if (this.publicationState === 'canceled') return;
     invariant(this.publicationState === 'pending' || this.publicationState === 'failed', 'Dispatched publication must reconcile before cancellation');
@@ -193,6 +200,7 @@ export class DebateEvaluation extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Erase retained content without removing the minimal identities needed for consent or delivery reconciliation. */
   purgePayload(reasonCode: string, at: Date): void {
     if (this.payloadPurgedAt) return;
     this.assertMutable(at);
@@ -212,14 +220,17 @@ export class DebateEvaluation extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Reject delivery callbacks from a different publication generation. */
   private assertAttempt(generation: number): void {
     invariant(this.publicationAttempt !== null && this.publicationAttempt.generation === generation, 'Stale publication attempt');
   }
 
+  /** Reject invalid update times, erased content where relevant, and exhausted row revisions. */
   private assertMutable(at: Date): void {
     assertDate(at, 'at');
     invariant(this.rowRevision < 2_147_483_647, 'Revision exhausted');
   }
 
+  /** Advance the optimistic row revision and record the local mutation time. */
   private touch(at: Date): void { this.rowRevision += 1; this.updatedAt = new Date(at); }
 }

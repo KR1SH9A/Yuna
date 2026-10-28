@@ -1,8 +1,14 @@
-# Entity persistence and planned application checks
+# PostgreSQL and conversation integration checks
 
-`entities.postgres.test.ts` runs against an isolated temporary PostgreSQL cluster. It verifies the core/full schemas, explicit administrator unban provenance, original evidence after job cleanup, scoped constraints, immutable evidence and competing ORM writes. Run it with `npm run test:db`; PostgreSQL `initdb`, `pg_ctl` and `psql` must be on PATH.
+`entities.postgres.test.ts` runs under Jest against an isolated temporary PostgreSQL cluster. It verifies the core/full schemas, explicit administrator unban provenance, original evidence after job cleanup, scoped constraints, immutable evidence and competing ORM writes. Run it with `npm run test:db`, or include it with `npm run test:all`; PostgreSQL `initdb`, `pg_ctl` and `psql` must be on PATH. Both commands run the database suite serially with explicit setup/teardown timeouts and real timers.
 
-Service and queue orchestration remain unimplemented. Future checks should exercise:
+`runtime-database.postgres.test.ts` uses another private cluster to verify that both process roles connect to the database selected by their URL and release their sessions. It also checks that startup leaves schema/tables untouched and rejects a missing database without creating it. Restricted grants are checked separately by the migration and conversation suites.
+
+`migrations.postgres.test.ts` applies the exact versioned SQL with the real preparation service and verifies role restrictions, idempotence, checksum drift, safe password handling, rollback and unrelated-table protections.
+
+`conversation-jobs.postgres.test.ts` uses the real worker login to exercise competing claims, daily caps, isolated disclosure, invalidation, lost attempts, late usage and payload cleanup. `conversation-flow.postgres.test.ts` runs the owner flow against actual migrated bot/worker roles with fake generation and a mocked Discord boundary: durable success, duplicate intake, edits, unknown sends, expiry, retention, disconnect and restart fencing. No external network calls or user credentials are used.
+
+Broader future checks for moderation, memory, debates and interaction workflows should exercise:
 
 - Workflow state, task, usage reservation, audit and outbox commit or roll back together where required.
 - Duplicate delivery and concurrent acceptance advance an expected task only once.

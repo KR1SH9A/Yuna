@@ -1,6 +1,7 @@
-/** Cross-row integrity for optional features; no staged table is required by the core schema. */
+/** Cross-row integrity for Memory, Debates and optional governance/indexing; emit only constraints whose tables are present. */
 export function stagedConstraintSql(tables: ReadonlySet<string>): string {
   const sql: string[] = [];
+  /** Emit optional cross-table constraints only when every participating feature table is registered. */
   const has = (...names: string[]): boolean => names.every(name => tables.has(name));
 
   if (has('action_plan', 'plan_approval')) {

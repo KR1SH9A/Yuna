@@ -1,3 +1,4 @@
+/** Retain bounded deletion progress without retaining the erased personal fact text. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -43,6 +44,7 @@ export class MemoryDeletionRequest extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly purgeAfter: Date;
 
+  /** Capture the exact scope, deletion generation and owners responsible for copied-data cleanup. */
   constructor(input: MemoryDeletionRequestInput) {
     super(input);
     assertUuid(input.scopeId);
@@ -66,6 +68,7 @@ export class MemoryDeletionRequest extends ScopedEntity {
     this.updatedAt = new Date(input.requestedAt);
   }
 
+  /** Accept monotonic progress from a declared cleanup owner for this exact deletion generation. */
   recordOwnerProgress(owner: string, generation: number, progress: MemoryOwnerProgress, at: Date): void {
     invariant(this.state === 'pending' && generation === this.deletionGeneration, 'Deletion progress is stale');
     invariant(this.requiredOwners.includes(owner), 'Unexpected cleanup owner');
@@ -80,6 +83,7 @@ export class MemoryDeletionRequest extends ScopedEntity {
     this.updatedAt = new Date(at);
   }
 
+  /** Complete only after every required owner has acknowledged deletion or explicit content-free retention. */
   markCompleted(at: Date): void {
     if (this.state === 'complete') return;
     assertDate(at, 'at');
@@ -96,6 +100,7 @@ export class MemoryDeletionRequest extends ScopedEntity {
     this.updatedAt = new Date(at);
   }
 
+  /** Record a bounded retry time and reason while unfinished owner cleanup remains. */
   scheduleRetry(nextAttemptAt: Date, errorCode: string, at: Date): void {
     invariant(this.state === 'pending', 'Completed deletion cannot retry');
     assertDate(at, 'at');

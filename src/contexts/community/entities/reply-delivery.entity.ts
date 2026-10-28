@@ -1,12 +1,12 @@
+/** Persist accepted reply content, one dispatch attempt and uncertainty without confusing acceptance with delivery. */
 import { createHash } from 'node:crypto';
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
 import { nextRevision, validateAudience, validateContinuation, validateMentions, type AllowedMentions, type AudienceBinding, type ContextBinding, type InteractionContinuation } from './community-values.js';
 
-export type ReplyDestination =
-  | { transport: 'channel_message'; channelId: string; replyMessageId: string | null; nonce: string; enforceNonce: boolean }
-  | { transport: 'interaction_original'; continuation: InteractionContinuation };
+import type { ReplyDestination } from '../contracts.js';
+export type { ReplyDestination } from '../contracts.js';
 export interface ReplyDeliveryInput extends ScopedEntityInput {
   requestId: string;
   acceptedResultReference: string;
@@ -21,30 +21,8 @@ export interface ReplyDeliveryInput extends ScopedEntityInput {
   purgeAfter: Date;
   maxAttempts: number;
 }
-export type ReplyDeliveryState = 'READY' | 'DISPATCHED' | 'UNKNOWN' | 'DELIVERED' | 'FAILED' | 'CANCELED' | 'EXPIRED';
-export interface ReplyAttemptMetadata {
-  generation: number;
-  executorId: string;
-  claimedAt: string;
-  sentAt: string | null;
-  respondedAt: string | null;
-  requestFingerprint: string;
-  responseClassification: 'delivered' | 'definitive_failure' | 'unknown' | null;
-  reconciliationReference: string | null;
-}
-export type ReplyOutcome =
-  | { classification: 'delivered'; messageId: string; httpStatus?: number }
-  | { classification: 'definitive_failure' | 'unknown'; code: string; httpStatus?: number };
-export interface ReplyDispatchClaim {
-  expectedGeneration: number;
-  expectedRowRevision: number;
-  sourceVersion: number;
-  privacyRevision: number;
-  audienceRevision: number;
-  executorId: string;
-  requestFingerprint: string;
-  at: Date;
-}
+import type { ReplyDeliveryState, ReplyAttemptMetadata, ReplyOutcome, ReplyDispatchClaim } from '../dto/reply-delivery.dto.js';
+export type { ReplyDeliveryState, ReplyAttemptMetadata, ReplyOutcome, ReplyDispatchClaim } from '../dto/reply-delivery.dto.js';
 
 /** Accepted content survives Jobs cleanup. This row alone describes what happened to the reply. */
 @Check({ name: 'reply_delivery_check_1', expression: "state IN ('READY', 'DISPATCHED', 'UNKNOWN', 'DELIVERED', 'FAILED', 'CANCELED', 'EXPIRED')" })
@@ -97,6 +75,7 @@ export class ReplyDelivery extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Copy the accepted text and exact destination into a durable intent whose deadline and retention are bounded. */
   constructor(input: ReplyDeliveryInput) {
     super(input);
     assertUuid(input.requestId);
@@ -163,6 +142,7 @@ export class ReplyDelivery extends ScopedEntity {
     this.updatedAt = new Date(this.createdAt);
   }
 
+  /** Consume one eligible dispatch opportunity and bind its generation, executor and endpoint fingerprint. */
   claimDispatch(input: ReplyDispatchClaim): number {
     this.check(input.expectedRowRevision, input.at);
     invariant(this.state === 'READY' && this.generation === input.expectedGeneration, 'Reply is not ready for this generation');
@@ -182,6 +162,7 @@ export class ReplyDelivery extends ScopedEntity {
     return this.generation;
   }
 
+  /** Record that the current attempt may reach Discord before starting external I/O. */
   markSent(generation: number, expectedRowRevision: number, at: Date): void {
     this.checkAttempt(generation, expectedRowRevision, at, 'DISPATCHED');
     invariant(this.attempt !== null, 'Missing attempt');
@@ -190,11 +171,13 @@ export class ReplyDelivery extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Apply the observed transport result only to the still-current dispatched attempt. */
   recordOutcome(generation: number, outcome: ReplyOutcome, expectedRowRevision: number, at: Date): void {
     this.checkAttempt(generation, expectedRowRevision, at, 'DISPATCHED');
     this.applyOutcome(outcome, at);
   }
 
+  /** Resolve an unknown send only when attributable evidence refers to this exact attempt. */
   recordReconciliation(generation: number, outcome: ReplyOutcome, evidenceReference: string, expectedRowRevision: number, at: Date): void {
     this.checkAttempt(generation, expectedRowRevision, at, 'UNKNOWN');
     invariant(evidenceReference.length > 0 && evidenceReference.length <= 200, 'Reconciliation requires bounded attributable evidence');
@@ -203,6 +186,7 @@ export class ReplyDelivery extends ScopedEntity {
     this.applyOutcome(outcome, at);
   }
 
+  /** Allow a bounded retry only after a definitive failure, never after an unknown send. */
   scheduleRetry(nextAttemptAt: Date, expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     assertDate(nextAttemptAt, 'nextAttemptAt');
@@ -214,6 +198,7 @@ export class ReplyDelivery extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Cancel an unsent intent and erase interaction secrets without pretending an in-flight send was recalled. */
   cancelBeforeDispatch(reason: string, expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     invariant(this.state === 'READY', 'In-flight or unknown delivery requires reconciliation');
@@ -226,6 +211,7 @@ export class ReplyDelivery extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Expire only unsent work after its deadline; uncertain sends retain their unresolved outcome. */
   expire(expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     invariant(this.state === 'READY', 'An unknown send remains unknown after its deadline');
@@ -237,6 +223,7 @@ export class ReplyDelivery extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Erase expired interaction credentials and make any still-unsent interaction intent ineligible. */
   purgeExpiredToken(expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     invariant(this.tokenExpiresAt !== null && at >= this.tokenExpiresAt, 'Interaction token has not expired');
@@ -263,6 +250,7 @@ export class ReplyDelivery extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Map validated transport evidence to delivered, failed or unknown state and retain the attempt response time. */
   private applyOutcome(outcome: ReplyOutcome, at: Date): void {
     invariant(this.attempt !== null, 'Missing attempt');
     if (outcome.httpStatus !== undefined) invariant(Number.isInteger(outcome.httpStatus) && outcome.httpStatus >= 100 && outcome.httpStatus <= 599, 'Invalid HTTP status');
@@ -280,14 +268,17 @@ export class ReplyDelivery extends ScopedEntity {
     this.attempt = { ...this.attempt, respondedAt: at.toISOString(), responseClassification: outcome.classification };
     this.touch(at);
   }
+  /** Require the exact state and generation before recording any attempt transition. */
   private checkAttempt(generation: number, expected: number, at: Date, state: ReplyDeliveryState): void {
     this.check(expected, at);
     invariant(this.state === state && this.generation === generation && this.attempt?.generation === generation, 'Stale delivery attempt');
   }
+  /** Reject stale row revisions and backwards transition times before changing owner state. */
   private check(expected: number, at: Date): void {
     assertDate(at, 'at');
     invariant(this.rowRevision === expected, 'Stale delivery revision');
     invariant(at >= this.updatedAt, 'Transition time cannot move backwards');
   }
+  /** Advance the access revision and copy the transition timestamp after a validated change. */
   private touch(at: Date): void { this.rowRevision = nextRevision(this.rowRevision); this.updatedAt = new Date(at); }
 }

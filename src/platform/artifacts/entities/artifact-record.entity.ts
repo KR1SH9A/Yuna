@@ -1,3 +1,4 @@
+/** Track retained artifact ownership, upload deadlines and cleanup that also covers late uploads. */
 import { BigIntType } from '@mikro-orm/core';
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
@@ -49,6 +50,7 @@ export class ArtifactRecord extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 0;
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Bind a storage key to its owner and retention scope before upload can begin. */
   constructor(input: ArtifactRecordInput) {
     super(input);
     assertUuid(input.ownerRecordRef);
@@ -71,6 +73,14 @@ export class ArtifactRecord extends ScopedEntity {
     this.updatedAt = new Date(this.createdAt);
   }
 
+  /** Commit one owner-approved upload claim before bytes leave local memory; an expired/deleting record cannot authorize disclosure. */
+  claimUpload(now: Date, expectedRevision: number): void {
+    this.checkWrite(now, expectedRevision);
+    invariant(this.state === 'PENDING' && this.rowRevision === 0 && now < this.uploadDeadline, 'Artifact upload cannot be claimed');
+    this.touch(now);
+  }
+
+  /** Make an upload readable only when its hash, media type and size are verified before the upload deadline. */
   finalizeUpload(hash: string, mediaType: string, byteSize: number, now: Date, expectedRevision: number): void {
     this.checkWrite(now, expectedRevision);
     assertNonNegativeInteger(byteSize, 'byteSize');
@@ -84,6 +94,7 @@ export class ArtifactRecord extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Start or resume idempotent cleanup without making the artifact readable again. */
   beginDeletion(now: Date, expectedRevision: number): void {
     this.checkWrite(now, expectedRevision);
     if (this.state === 'DELETED' || this.state === 'DELETING') return;
@@ -93,6 +104,7 @@ export class ArtifactRecord extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Confirm deletion only after the upload horizon so a late authorized upload cannot escape cleanup. */
   recordDeletion(now: Date, expectedRevision: number): void {
     this.checkWrite(now, expectedRevision);
     invariant(this.state === 'DELETING', 'Deletion was not requested');
@@ -106,6 +118,7 @@ export class ArtifactRecord extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Retain a bounded failure code and future cleanup time while the artifact remains unavailable. */
   scheduleDeletionRetry(nextAttemptAt: Date, code: string, now: Date, expectedRevision: number): void {
     this.checkWrite(now, expectedRevision);
     assertDate(nextAttemptAt, 'nextAttemptAt');
@@ -115,14 +128,17 @@ export class ArtifactRecord extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Permit reads only for a verified ready artifact that has not reached retention expiry. */
   isReadable(now: Date): boolean {
     assertDate(now, 'now');
     return this.state === 'READY' && now < this.expiresAt;
   }
+  /** Reject stale revisions, backwards timestamps and exhausted artifact revisions. */
   private checkWrite(now: Date, expectedRevision: number): void {
     assertDate(now, 'now');
     invariant(expectedRevision === this.rowRevision && now >= this.updatedAt, 'Stale artifact write');
     invariant(this.rowRevision < 2_147_483_647, 'Artifact revision exhausted');
   }
+  /** Advance the access revision and copy the transition timestamp after a validated change. */
   private touch(now: Date): void { this.rowRevision++; this.updatedAt = new Date(now); }
 }

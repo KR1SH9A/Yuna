@@ -1,3 +1,4 @@
+/** Declare cross-record and scoped-reference database constraints that complement entity-level validation. */
 import type { MikroORM } from '@mikro-orm/postgresql';
 import { moderationConstraintSql } from './moderation-constraints.js';
 import { jobConstraintSql } from './job-constraints.js';
@@ -65,14 +66,18 @@ const scopedReferences: ReadonlyArray<readonly [string, string, string]> = [
   ['debate_evaluation', 'rubric_revision_id', 'rubric_revision'],
 ];
 
+/** Quote generated SQL identifiers safely, including any embedded quote characters. */
 const quote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+/** Join a known column list using identifier quoting rather than interpolating raw names. */
 const columns = (names: string[]): string => names.map(quote).join(', ');
 
+/** Return the entity-owned constraint SQL used to validate and prepare the complete scoped schema. */
 export function entityConstraintSql(orm: MikroORM): string {
   const tables = new Map([...orm.getMetadata().getAll().values()]
     .filter(meta => !meta.abstract && !!meta.tableName)
     .map(meta => [meta.tableName, new Set(meta.props.flatMap(property => property.fieldNames))]));
   const sql: string[] = [];
+  /** Declare a deferred scoped foreign key so a complete owner graph can be persisted atomically. */
   const fk = (table: string, name: string, fields: string[], parent: string, target: string[]) => {
     sql.push(`alter table ${quote(table)} add constraint ${quote(name)} foreign key (${columns(fields)}) references ${quote(parent)} (${columns(target)}) on delete no action deferrable initially deferred;`);
   };

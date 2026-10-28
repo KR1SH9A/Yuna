@@ -1,5 +1,6 @@
+/** Test immutable intake provenance, payload erasure and the lifecycle of stored artifacts. */
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from '@jest/globals';
 import { randomUUID } from 'node:crypto';
 import { IntakeEvent } from '../../src/platform/intake/entities/intake-event.entity.js';
 import { IntakeDelivery } from '../../src/platform/intake/entities/intake-delivery.entity.js';
@@ -7,9 +8,12 @@ import { ArtifactRecord } from '../../src/platform/artifacts/entities/artifact-r
 import { assertDiscordId, copyJson } from '../../src/platform/db/entity-values.js';
 
 const now = new Date('2026-10-15T10:00:00Z');
+/** Create a deterministic timestamp after the fixture start. */
 const later = (ms: number) => new Date(now.getTime() + ms);
+/** Build the scoped installation identity used by this fixture. */
 const scope = () => ({ installationId: randomUUID(), guildId: '18446744073709551615', createdAt: now });
 
+/** Build an intake-event fixture with stable provenance and bounded retention. */
 function event(kind: 'message_create' | 'message_delete' | 'report' = 'message_create') {
   return new IntakeEvent({ ...scope(), eventKind: kind, sourceEventKey: randomUUID(), sourceKey: 'channel/message',
     ingressSequence: 9_007_199_254_740_993n, observedAt: now, authorKind: 'unknown',

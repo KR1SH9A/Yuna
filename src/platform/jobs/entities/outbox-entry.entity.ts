@@ -1,3 +1,4 @@
+/** Persist disposable wake-up messages with lease-bound publication and explicit routing repair. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { RecordEntity } from '../../db/base.entity.js';
 import { assertDate, assertDiscordId, assertUuid, invariant, type RecordEntityInput } from '../../db/entity-values.js';
@@ -44,6 +45,7 @@ export class OutboxEntry extends RecordEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: 'datetime', columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Validate a bounded wake-up envelope and optional installation scope without embedding business payloads. */
   constructor(input: OutboxEntryInput) {
     super(input);
     invariant((input.installationId === undefined) === (input.guildId === undefined), 'Outbox scope must be complete or absent');
@@ -82,6 +84,7 @@ export class OutboxEntry extends RecordEntity {
     return this.claimGeneration;
   }
 
+  /** Mark publication successful only for the current unexpired publisher claim. */
   recordPublished(generation: number, now: Date): void {
     this.assertClaim(generation, now);
     this.advanceRevision(now);
@@ -91,6 +94,7 @@ export class OutboxEntry extends RecordEntity {
     this.leaseUntil = null;
   }
 
+  /** Release the current publisher claim and retain a bounded reason plus future retry time. */
   scheduleRetry(generation: number, dueAt: Date, reason: string, now: Date): void {
     this.assertClaim(generation, now);
     assertDate(dueAt, 'Publication retry time');
@@ -104,6 +108,7 @@ export class OutboxEntry extends RecordEntity {
     this.leaseUntil = null;
   }
 
+  /** Stop publication with an explicit routing problem while releasing the active lease. */
   park(generation: number, reason: string, now: Date): void {
     this.assertClaim(generation, now);
     invariant(reason.length > 0 && reason.length <= 256, 'A bounded routing reason is required');
@@ -114,6 +119,7 @@ export class OutboxEntry extends RecordEntity {
     this.leaseUntil = null;
   }
 
+  /** Requeue a parked wake-up after routing is repaired without creating a second business operation. */
   resumeAfterRoutingRepair(now: Date): void {
     invariant(this.state === 'parked', 'Outbox entry is not parked');
     this.advanceRevision(now);
@@ -122,11 +128,13 @@ export class OutboxEntry extends RecordEntity {
     this.nextAttemptAt = new Date(now);
   }
 
+  /** Require the current publication generation and live lease before recording transport outcomes. */
   private assertClaim(generation: number, now: Date): void {
     assertDate(now, 'Publication result time');
     invariant(this.state === 'claimed' && this.claimGeneration === generation && this.leaseUntil !== null && now < this.leaseUntil, 'Publication claim is stale');
   }
 
+  /** Advance the bounded row revision and update time so competing writes can detect stale state. */
   private advanceRevision(now: Date): void {
     assertDate(now, 'Update time');
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Run one bot under launchd. Replace both placeholders; this template contains no credentials. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.yuna.bot</string>
+  <key>WorkingDirectory</key><string>__YUNA_DIRECTORY__</string>
+  <key>ProgramArguments</key><array>
+    <string>__NODE_EXECUTABLE__</string><string>--env-file=.env.bot</string><string>dist/apps/bot/cli.js</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ExitTimeOut</key><integer>15</integer>
+  <key>StandardOutPath</key><string>__YUNA_DIRECTORY__/.local/logs/bot.log</string>
+  <key>StandardErrorPath</key><string>__YUNA_DIRECTORY__/.local/logs/bot.log</string>
+</dict></plist>

@@ -1,40 +1,26 @@
+/** Validate shared Community bindings and advance bounded durable revisions. */
 import { assertDate, assertDiscordId, assertNonNegativeInteger, invariant } from '../../../platform/db/entity-values.js';
 
-export interface AudienceBinding {
-  schemaVersion: 1;
-  visibility: 'channel' | 'requester';
-  channelId: string;
-  requesterUserId: string | null;
-  revision: number;
-}
-export interface AllowedMentions { users: string[]; roles: string[]; everyone: false; repliedUser: boolean }
-/** Ciphertext only. ISO timestamps keep this bounded continuation compatible with JSONB. */
-export interface InteractionContinuation {
-  schemaVersion: 1;
-  applicationId: string;
-  interactionId: string;
-  tokenCiphertext: string;
-  tokenKeyId: string;
-  tokenExpiresAt: string;
-  acknowledgment: 'deferred';
-  acknowledgedAt: string;
-  ephemeral: boolean;
-}
-export interface ContextBinding { owner: 'intake' | 'knowledge' | 'memory'; recordId: string; revision: number; contentHash: string }
+import type { AudienceBinding, AllowedMentions, InteractionContinuation } from '../contracts.js';
+export type { AudienceBinding, AllowedMentions, InteractionContinuation, ContextBinding } from '../contracts.js';
 
+/** Require an exact channel identity and a requester for private audiences before content can be bound to delivery. */
 export function validateAudience(binding: AudienceBinding): void {
   invariant(binding.schemaVersion === 1, 'Unsupported audience schema');
+  invariant(binding.visibility === 'channel' || binding.visibility === 'requester', 'Invalid audience visibility');
   assertDiscordId(binding.channelId);
   assertNonNegativeInteger(binding.revision, 'audience revision');
   invariant(binding.revision <= 2147483647, 'Audience revision exceeds storage range');
   if (binding.requesterUserId) assertDiscordId(binding.requesterUserId);
   invariant(binding.visibility !== 'requester' || binding.requesterUserId !== null, 'Private audience requires its requester');
 }
+/** Reject broadcast mentions and unbounded mention allowlists before publication. */
 export function validateMentions(mentions: AllowedMentions): void {
   invariant(mentions.everyone === false, 'Replies cannot mention everyone');
   invariant(mentions.users.length <= 100 && mentions.roles.length <= 100, 'Mention allowlists must be bounded');
   for (const id of [...mentions.users, ...mentions.roles]) assertDiscordId(id);
 }
+/** Require a still-valid deferred interaction and bounded encrypted token material. */
 export function validateContinuation(value: InteractionContinuation, at: Date): void {
   invariant(value.schemaVersion === 1 && value.acknowledgment === 'deferred', 'Durable reply requires a deferred interaction');
   assertDiscordId(value.applicationId);
@@ -46,6 +32,7 @@ export function validateContinuation(value: InteractionContinuation, at: Date): 
   invariant(expiresAt > at && acknowledgedAt <= at && expiresAt > acknowledgedAt, 'Interaction continuation is not valid at this time');
   invariant(value.tokenCiphertext.length > 0 && value.tokenCiphertext.length <= 8192 && value.tokenKeyId.length > 0 && value.tokenKeyId.length <= 200, 'Encrypted continuation must be bounded');
 }
+/** Advance a nonnegative revision without exceeding the PostgreSQL integer range. */
 export function nextRevision(value: number): number {
   assertNonNegativeInteger(value, 'revision');
   invariant(value < 2147483647, 'Revision exhausted its storage range');

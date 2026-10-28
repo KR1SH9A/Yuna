@@ -1,6 +1,8 @@
+/** Versioned guild budget configuration; admitted attempts retain their original policy/price snapshot. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
+import { assertExactMoney } from '../../../platform/usage/entities/usage-reservation.entity.js';
 
 export interface BudgetLimit {
   budgetKey: string;
@@ -9,7 +11,11 @@ export interface BudgetLimit {
   allowance: { mode: 'disabled' | 'unlimited' } | { mode: 'limited'; amount: string; currency: string };
 }
 export interface BudgetWindowRule { budgetKey: string; durationSeconds: number }
-export interface AttemptBound { provider: string; modelRoute: string; maxUnits: number; maxCost: string; currency: string }
+export interface AttemptBound {
+  provider: string; modelRoute: string; maxUnits: number; maxCost: string; currency: string;
+  pricingVersion?: string; inputPerMillion?: string; outputPerMillion?: string;
+  maxInputTokens?: number; maxOutputTokens?: number;
+}
 export interface UsagePolicyConfiguration {
   schemaVersion: 1;
   limits: readonly BudgetLimit[];
@@ -22,6 +28,7 @@ export interface UsagePolicyInput extends ScopedEntityInput {
   updatedBy: { kind: 'user'; userId: string } | { kind: 'system'; operation: string };
 }
 
+/** Reject incomplete price snapshots before they can reach reservation accounting. */
 function validateConfiguration(value: UsagePolicyConfiguration): void {
   invariant(value.schemaVersion === 1, 'Unsupported usage policy schema');
   invariant(new Set(value.limits.map(limit => limit.budgetKey)).size === value.limits.length, 'Duplicate budget key');
@@ -37,7 +44,16 @@ function validateConfiguration(value: UsagePolicyConfiguration): void {
   }
   for (const bound of value.perAttemptBounds) {
     assertNonNegativeInteger(bound.maxUnits, 'maxUnits');
-    invariant(/^\d+(?:\.\d+)?$/.test(bound.maxCost) && bound.currency.length > 0, 'Invalid exact attempt ceiling');
+    assertExactMoney({ amount: bound.maxCost, currency: bound.currency });
+    const priced = [bound.pricingVersion, bound.inputPerMillion, bound.outputPerMillion, bound.maxInputTokens, bound.maxOutputTokens];
+    if (priced.some(value => value !== undefined)) {
+      invariant(priced.every(value => value !== undefined), 'Price snapshot is incomplete');
+      invariant(typeof bound.pricingVersion === 'string' && /^[^\s\p{Cc}]{1,128}$/u.test(bound.pricingVersion), 'Price version is invalid');
+      assertExactMoney({ amount: bound.inputPerMillion!, currency: bound.currency });
+      assertExactMoney({ amount: bound.outputPerMillion!, currency: bound.currency });
+      invariant(Number.isInteger(bound.maxInputTokens) && bound.maxInputTokens! > 0 && bound.maxInputTokens! <= 128_000
+        && Number.isInteger(bound.maxOutputTokens) && bound.maxOutputTokens! > 0 && bound.maxOutputTokens! <= 4096, 'Token ceilings are invalid');
+    }
   }
 }
 
@@ -58,6 +74,7 @@ export class UsagePolicy extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Validate and snapshot budget windows, per-attempt bounds and the actor who approved this pricing policy. */
   constructor(input: UsagePolicyInput) {
     super(input);
     validateConfiguration(input.configuration);
@@ -90,6 +107,7 @@ export class UsagePolicy extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Advance optimistic concurrency metadata after a valid local state transition. */
   private advanceRevision(at: Date): void {
     this.rowRevision += 1;
     this.updatedAt = new Date(at);

@@ -1,12 +1,14 @@
 # Yuna architecture plan
 
-This is the target service architecture, supported by an implemented and tested entity layer. Services and external integrations remain scaffolds. It resolves the task lifecycle, durable intake, cleanup, configuration ownership, revision checks and task routing. The [entity model plan](DATA_MODEL_REFERENCE.md) is the authoritative target for persistent fields, ownership and Discord API constraints; the [DTO and module reference](DTO_REFERENCE.md) covers boundary data and public service wiring. The DTO organization and module export rules are now represented in the scaffold; the runtime lifecycle changes remain planned.
+This reference preserves the architecture decisions and identifies the executable scope as of 21 October 2026. Community conversation and approved knowledge, Administration controls/configuration/removal, original-message Moderation and explicit staff actions, private explicit Memory, and consented Debate scoring/publication are implemented. The bot and restricted worker use ordinary TypeScript composition, native PostgreSQL transactions, notifications and recovery scans. [Yuna.md](../Yuna.md) records current verification; [local setup](LOCAL_TEST.md) explains deployment. Applying migrations and testing real credentials remain operator steps.
 
-**Confirmed scope:** Moderation assesses only retained original message content, and both Moderation and potentially eligible Community input recover after local persistence. Community replies have a deadline and expire instead of arriving late. Memory and Debates remain staged; optional governance remains optional. There is no appeal or speech subsystem. Automatic supported-policy bans require no staff review. Unban can only originate from an explicit Yuna request by a current Discord administrator; optional governance and AI cannot initiate it. A later edit, deletion, report or REST fetch does not substitute for an uncaptured original. Evidence capture revisions may improve coverage of that same original; they are not message-edit history.
+**Selected scope:** Moderation assesses retained original text; later edits, deletion, reports or REST fetches do not substitute for an uncaptured original. Community checks current sources and approved context again before disclosure and sending. Memory stores only explicit private submissions and uses lexical inspection; inferred facts, embeddings and public/provider memory disclosure remain future options. Debates use explicit submissions, independently recorded consent, an immutable rubric/transcript and typed Jev assessment; deterministic owner code computes scores and accepted results publish once to the consented channel. Optional multi-custodian governance and kick remain staged. There is no appeal or speech subsystem. Explicit policy mappings can authorize automatic bans; the starter maps supported violations to warnings, with no message-history deletion. Unban requires an explicit authorized administrator request.
+
+The detailed sections retain target concepts such as optional artifact storage, inferred-memory tasks and generic routing. They do not imply those extensions are active. Kick execution, governance approval/enrollment, bounded artifact storage and embedding generation now have executable component methods; see [the method guide](../Yuna.md#optional-component-methods-completed-on-28-october) for their exact integration limits. Concrete runtime task names and current boundaries are listed in sections 7–8.
 
 ## 1. Runtime and ownership
 
-Yuna is a modular application with two process roles. The bot receives Discord input, persists it, invokes feature services, accepts stored AI results and performs authorized Discord effects. The AI worker executes one prepared capability at a time and stores its result. PostgreSQL holds authoritative application state; the durable queue supplies recoverable wake-up signals. Multiple instances of either role may run from the same repository.
+Yuna is a modular application with two process roles. The bot receives Discord input, persists it, invokes feature services, accepts stored AI results and performs authorized Discord effects. The AI worker executes one prepared capability at a time and stores its result. PostgreSQL holds authoritative application state; the durable queue supplies recoverable wake-up signals. The deployment supports one bot owner per configured guild and concurrent worker lanes. A dedicated PostgreSQL advisory-lock session rejects a second bot and triggers shutdown if ownership is lost; automatic multi-bot failover is not implemented.
 
 | Boundary | Owns | Does not decide |
 | --- | --- | --- |
@@ -28,7 +30,7 @@ Keep each feature's module, services, policies, `dto/`, internal `contracts.ts` 
 
 Discord handlers perform the controller role. They normalize external events, validate the selected feature's arguments and supply verified identity separately. `InteractionContextDto` contains transport-derived identity; the bot obtains current installation state and supplies the transport-neutral `TrustedCallerContext` defined by Administration. A user cannot choose their actor, guild or authority through an input DTO. Services still check current permissions, revisions and business invariants. Automatic policy work uses its explicit policy-authority binding rather than inventing a human caller.
 
-Validation must be wired into the actual Discord and queue entry points. Validate normalized/retained snapshots, queue envelopes and AI capability inputs/results at their boundaries; do not rely on TypeScript annotations alone. Response DTOs allowlist serialized fields after the service applies access rules. Never return ORM entities or include SDK objects in DTOs. The schema/class validation implementation will be selected with runtime dependencies; this scaffold defines the responsibilities without installing either approach.
+Validation must be wired into the actual Discord and queue entry points. Validate normalized/retained snapshots, queue envelopes and AI capability inputs/results at their boundaries; do not rely on TypeScript annotations alone. Response DTOs allowlist serialized fields after the service applies access rules. Never return ORM entities or include SDK objects in DTOs. Executable entry points use bounded runtime validators; TypeScript shapes alone are never treated as validation.
 
 Feature modules explicitly export the services consumed by bot entry points, completion handlers and recovery. Entity registrations, policies and repositories stay private. DTOs/types are data imports, not dependency-injection providers. Native ORM repositories and queries are the starting persistence mechanism. Introduce a feature-owned custom repository only when concrete repeated or complex queries justify one; services remain responsible for transactions and business decisions.
 
@@ -188,15 +190,14 @@ An event-driven moderation action must have a committed database record linked t
 
 Persist task `kind` and `schemaVersion` separately; `@1` below is shorthand. Task kinds identify feature use cases. Several kinds may reuse one capability handler. Model and prompt versions are separate bindings.
 
-| Kind | Requesting owner/stage | Contract | Worker handler → capability | Accepting owner |
-| --- | --- | --- | --- | --- |
-| `moderation.observe@1` | Moderation / observations | `ObservationInput → ObservationResult` | `handleObservation → LlmService.observeContent` | `ModerationService.acceptObservationResult` |
-| `moderation.assess@1` | Moderation / assessment | `AssessmentInput → AssessmentResult` | `handleAssessment → JevService.assessQuestions` | `ModerationService.acceptAssessmentResult` |
-| `community.route@1` | Community / routing | `AssessmentInput → AssessmentResult` | `handleAssessment → JevService.assessQuestions` | `ConversationService.acceptRoutingResult` |
-| `community.generate_reply@1` | Community / generation | `ReplyGenerationInput → ReplyGenerationResult` | `handleReplyGeneration → LlmService.generateReply` | `ConversationService.acceptReplyResult` |
-| `memory.propose_facts@1` — staged | Memory / fact candidates | Proposed `FactProposalInput → FactProposalResult` | Proposed `handleFactProposal → LlmService.extractFactCandidates` | `MemoryService.acceptFactProposal` |
-| `memory.embed_fact@1` — optional staged indexing | Memory / existing fact vector | `EmbeddingInput → EmbeddingResult` | `handleEmbedding → EmbeddingService.embedTexts` | `MemoryService.acceptEmbeddingResult` |
-| `debates.evaluate@1` — staged | Debates / frozen evaluation variant | `AssessmentInput → AssessmentResult` | `handleAssessment → JevService.assessQuestions` | `DebateService.acceptEvaluation` |
+| Kind | Status and owner | Worker capability | Acceptance |
+| --- | --- | --- | --- |
+| `community.generate@1` | Active Community conversation | `LlmService.generateReply` | `ConversationService.acceptReplyResults`, including current source and approved-knowledge bindings |
+| `moderation.observe@1` | Active original-evidence observation | `LlmService.observeContent` | `ModerationWorkflowService.acceptResult` |
+| `moderation.assess@1` | Active policy assessment | `JevService.assessQuestions` | `ModerationWorkflowService.acceptResult`; deterministic policy creates intent |
+| `debates.assess@1` | Active frozen original/reversed variants | `JevService.assessQuestions` | `DebateService.acceptEvaluation`; deterministic scoring owns totals and uncertainty |
+| `community.route@1` | Future optional routing; direct mentions/replies currently use code policy | Proposed assessment capability | Not admitted by the current runtime |
+| `memory.propose_facts@1`, `memory.embed_fact@1` | Future optional inferred facts/indexing | Proposed extraction/embedding capabilities | Not admitted; shipped Memory uses explicit submissions and no provider calls |
 
 Each route needs guild/immutable installation ID, owner operation reference, relevant revision bindings and source-use mode, source/input hash, deadline and usage linkage; sequenced workflows also bind stage and expected task. Validate feature-specific output too: known question IDs, permitted routing candidates, fact provenance, or frozen transcript/rubric/variant. Required paired debate evaluations use distinct tasks and expected-task slots; workflow/stage alone is not unique.
 
@@ -210,25 +211,25 @@ The first Memory retrieval design can use bounded database/lexical lookup. Fact 
 
 Disabling new admission, removing deployment support and invalidating permission are different actions. Disabled features must drain or cancel existing tasks while keeping their acceptors and cleanup handlers installed. Unsupported stored versions are explicitly parked and visible. Deployment checks must reject removal of a handler still required by outstanding work, unless an explicit maintenance disposition is supplied.
 
-## 8. Repository organization and remaining work
+## 8. Repository organization and current boundaries
 
-The entity layer now has all 40 models, local transition guards, scoped PostgreSQL constraints and executable tests. Feature-owned DTO files, contract catalogs, module exports and the static task lookup remain scaffolds. Service orchestration, live authorization, external dispatch and deployment migrations are still unimplemented. The following table separates that organization from the remaining lifecycle work.
+The owner services, runtime validators, task routes and cleanup for enabled features are composed directly in `apps/bot/bot.module.ts` and `apps/ai-worker/ai-worker.module.ts`. The migration runner deploys restricted functions and the selected private owner tables. Catalog comments and optional schema models remain useful design references; they do not create additional runtime routes.
 
-| Area | Planned change |
+| Area | Executable scope and retained extensions |
 | --- | --- |
-| Feature `dto/`, `contracts.ts` and modules | DTO ownership and provider exports are documented in the scaffold; add runtime validation and module wiring with implementation |
-| `apps/ai-worker/task.registry.ts` | Static lookup is documented without an injectable registry; implement the typed mapping with handlers |
-| `src/platform/db/transaction-context.ts` | Defer/remove placeholder wrapper; use native transaction/request-context primitives until repetition demonstrates a need |
-| `src/ai/llm/prompts`, `src/ai/jev/questions` | Create asset directories when real versioned assets exist; empty README-only placeholders are unnecessary |
-| Bot ingress / `src/platform/intake` | Add the small durable intake boundary, source validity gate and two records; keep consumer wiring in the bot |
-| Jobs | Implement the documented single terminal-result lifecycle, source-use bindings and restricted disclosure |
-| Artifacts / Audit | Make their already implied durable records explicit |
-| Existing feature owners | Add configuration, retention and removal entry points as specified |
-| Memory / Debates / governance | Keep clearly staged; do not activate incomplete task or cleanup routes |
+| Administration | Verified owner bootstrap; scoped grant/revoke; pause/resume; channel mode; approved file configuration; usage/feature policy; safe status; removal and audit |
+| Community / Knowledge | Direct conversation, current-source gates, bounded visible approved reference retrieval, one-send delivery, and retention; semantic search and broad history retrieval remain unselected |
+| Moderation | Independent original-text capture, observation/assessment, code-owned policy findings, staff ban/unban, warnings, current native execution checks and exact reconciliation; no media inspection or kick route |
+| Jobs / Usage | Restricted claim/disclosure/start/result functions per active route, immutable usage snapshots, guild/member UTC-day caps, exact money and uncertainty retention; no generic workflow engine |
+| Memory | Consent, explicit private facts, bounded lexical inspection, forget/withdrawal and owner cleanup; no inference, embeddings or public/provider copies |
+| Debates | Full reviewable scope, two-person consent, explicit transcript, paired typed evaluation, deterministic scoring, one-send publication and erasure; no score-based authority |
+| Audit / Artifacts | Transactional reference-only audit plus expiry/removal; artifact models remain available for future retained-media storage, which is not enabled |
+| Optional governance | Multi-custodian plans/enrollment remain staged; baseline administration is current-owner managed |
+
 
 Keep `ModerationAction` separate from `ActionAttempt`, and `AiTask` separate from `TaskAttempt`, `TaskResult` and `TaskAcceptance`. Their lifecycles differ. Reply attempt metadata can remain within `ReplyDelivery` initially; extract a record only when its actual concurrency or history requirements justify it. Governance approval authorizes an exact plan; execution consumption belongs to `ActionPlan`, not both plan and approval.
 
-## 9. Implementation order and completion checks
+## 9. Original implementation sequence and continuing regression checks
 
 1. **Core contracts and constraints:** agree lifecycle enums, same-guild keys, task/result uniqueness, deadlines and revision meanings. Update the design scaffold before adding runtime behavior.
 2. **Durable intake plus task slice:** deliver one input to both owners, register work, execute, store a result and acknowledge it. Add the static registration coverage check.
@@ -250,4 +251,4 @@ Meaningful acceptance checks for that implementation:
 - Temporarily unavailable owner/schema: no uncontrolled retry loop and no lost terminal result.
 - Disable a feature or reinstall a guild: existing work drains/cancels under its original generation; old authority never revives.
 
-The TypeScript files remain design comments. DTO organization, handler responsibilities and module exports are reflected in those comments; durable intake, lifecycle transitions, cleanup and configuration behavior still require implementation.
+The sequence above records the original design approach; current implemented scope is summarized in section 8 and [Yuna.md](../Yuna.md). Continue testing each enabled route through acceptance, delivery and erasure. Keep ordinary TypeScript composition and native transactions rather than introducing a framework to satisfy retained design catalogs.

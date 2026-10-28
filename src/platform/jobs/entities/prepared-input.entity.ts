@@ -1,3 +1,4 @@
+/** Store exact owner-selected provider input with validity bindings, disclosure eligibility and payload erasure. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertNonNegativeInteger, assertUuid, copyJson, invariant, type JsonObject, type ScopedEntityInput } from '../../db/entity-values.js';
@@ -62,6 +63,7 @@ export class PreparedInput extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: 'datetime', columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Copy the exact owner-selected payload and validity bindings under immutable task and content identities. */
   constructor(input: PreparedInputInput) {
     super(input);
     assertUuid(input.taskId);
@@ -134,6 +136,7 @@ export class PreparedInput extends ScopedEntity {
     this.purgeReason = reason;
   }
 
+  /** Advance the bounded row revision and update time so competing writes can detect stale state. */
   private advanceRevision(now: Date): void {
     assertDate(now, 'Update time');
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');

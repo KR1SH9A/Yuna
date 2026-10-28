@@ -9,18 +9,31 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/tests/entities/*.test.js",
-    "test:db": "npm run build && node --test dist/tests/integration/entities.postgres.test.js",
-    "schema:sql": "npm run build --silent && node dist/src/platform/db/print-schema.js"
+    "start:bot": "node dist/apps/bot/cli.js",
+    "start:worker": "node dist/apps/ai-worker/cli.js",
+    "test": "npm run build && node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathIgnorePatterns=dist/tests/integration/",
+    "test:db": "npm run build && node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --testPathPatterns=dist/tests/integration/",
+    "test:all": "npm run build && node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test:coverage": "npm run build && node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --coverage",
+    "schema:sql": "npm run build --silent && node dist/src/platform/db/print-schema.js",
+    "db:prepare": "npm run build && node --env-file=.env.admin dist/apps/admin/cli.js",
+    "local:bot": "node --env-file=.env.bot dist/apps/bot/cli.js",
+    "local:worker": "node --env-file=.env.worker dist/apps/ai-worker/cli.js",
+    "register:commands": "npm run build && node --env-file=.env.bot dist/apps/admin/register-discord-commands.js",
+    "health": "node --env-file=.env.bot dist/apps/bot/health.js",
+    "check:docs": "node scripts/check-documentation.mjs"
   },
   "dependencies": {
     "@mikro-orm/core": "7.2.5",
     "@mikro-orm/decorators": "7.2.5",
     "@mikro-orm/postgresql": "7.2.5",
+    "discord.js": "14.27.0",
     "reflect-metadata": "0.2.2"
   },
   "devDependencies": {
+    "@jest/globals": "30.5.2",
     "@types/node": "24.10.0",
+    "jest": "30.5.2",
     "typescript": "6.0.2"
   }
 }

@@ -1,0 +1,20 @@
+{
+  "criteria": [
+    {
+      "id": "reasoning",
+      "description": "Support the stated claim with connected, relevant reasons.",
+      "levels": ["No relevant reasons", "Some relevant reasons with gaps", "Clear connected reasons"],
+      "weight": "1"
+    },
+    {
+      "id": "engagement",
+      "description": "Address the other participant's actual argument fairly and specifically.",
+      "levels": ["Does not address the argument", "Addresses part of the argument", "Addresses its central reasoning fairly"],
+      "weight": "1"
+    }
+  ],
+  "minimumWinningMargin": "0.1",
+  "minimumConfidence": 0.9,
+  "paired": true,
+  "maximumPairDifference": 1
+}

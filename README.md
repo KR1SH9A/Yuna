@@ -1,74 +1,93 @@
 # Yuna
 
-Yuna is a planned Discord assistant for conversation, server help, moderation, administration, personal memory and structured debates.
+Yuna is a Discord assistant with durable conversations, approved server knowledge, configurable text moderation, staff controls, personal usage limits consented private memory and structured debates. The bot and provider worker run separately, using PostgreSQL to record claims, decisions, delivery intent and uncertain outcomes. See [Yuna.md](Yuna.md) for implementation boundaries and verification.
 
-**Current state: implemented entity layer.** All 40 planned records have typed MikroORM mappings, constructors, local transition guards and concise ownership comments. The repository builds and has executable entity and PostgreSQL persistence tests. Application services, DTOs, handlers and runtime composition remain design scaffolds; the Discord bot cannot be started yet.
+Start with [local setup](docs/LOCAL_TEST.md), choose a [configuration template](config/README.md), and use the [operations guide](docs/OPERATIONS.md) for health checks, supervision and backup/restore. No service starts and no Discord command is registered merely by installing dependencies or building the project.
 
-Start with the [architecture plan](docs/ARCHITECTURE_PLAN.md) for proposed ownership, durable intake, task lifecycle, configuration, cleanup and implementation order. Use the [entity model plan](docs/DATA_MODEL_REFERENCE.md) for target fields, constraints, ownership, lifecycle and verified Discord API implications across all 40 planned records. It includes original-only moderation, durable accepted reply content and immutable installation identities. The entity layer implements storage and local invariants; orchestration, permission checks and external effects remain service work.
+## Starter behavior
 
-The [DTO and module reference](docs/DTO_REFERENCE.md) maps request/response DTOs to their owning services, explains trusted caller context, and lists each module's public providers. The scaffold now gives concrete DTOs their own files under the relevant feature's `dto/` directory.
+- Conversations respond to direct mentions/replies. Approved knowledge is retrieved only for the permitted channel and checked again before provider disclosure, result acceptance and sending.
+- The moderation template covers text harassment, threats, privacy violations and scams. It warns for established violations and takes no action for suspicion or uncertainty. Owners can configure ban mappings explicitly.
+- The starter allows ten member-requested provider attempts and 1,000 total server attempts per UTC day. A separate budgeted template supplies $0.50 member and $5 server limits; verified model prices are required before capped calls run.
+- Debates require both participants to consent to a complete scope, rubric, publication audience and paying initiator. Only explicit submissions are assessed; results confer no permissions or moderation consequences.
+- Memory is private and based on explicit member submissions. Consent, inspection/search and forgetting are separate commands. It is not silently extracted from chat or added to public conversation context.
 
-## Layout
+The templates choose models through environment selectors, so rules and quotas do not depend on a particular model name. The active provider routes support DeepSeek chat and OpenRouter Decisions. An optional OpenRouter embedding adapter is implemented separately; Memory has no embedding task or retrieval route enabled. A different provider protocol needs its own reviewed adapter and execution contract.
 
-| Directory | Purpose |
-| --- | --- |
-| `apps/bot` | Discord-facing runtime composition, inbound handlers, completion routing and recovery entry points. |
-| `apps/ai-worker` | Restricted worker composition, explicit task registration and individual AI task handlers. |
-| `src/contexts/community` | Conversation requests, approved knowledge, reply policy and delivery. |
-| `src/contexts/moderation` | Cases, evidence, findings, warnings, sanctions and authenticated staff actions. |
-| `src/contexts/administration` | Guild lifecycle, grants, safety state, usage policy and optional approvals. |
-| `src/contexts/memory` | Personal consent, facts, permitted retrieval and deletion. |
-| `src/contexts/debates` | Participation, transcripts, rubric evaluation and publication. |
-| `src/ai` | Plain capability contracts and separate LLM/Jev/embedding integrations. |
-| `src/discord` | Normalized event/context DTOs, reads and effects, independent of business contexts. |
-| `src/platform` | Database boundaries, durable jobs, usage accounting, artifacts and audit. |
-| `tests` | Executable entity/PostgreSQL tests and plans for future application checks. |
-| `docs` | Architecture plan, entity lookup, DTO/module reference and future decision records. |
+Optional kick execution, multi-custodian approval methods and bounded artifact storage are implemented at component level. Command registration, governance schema/provisioning and media/semantic workflows remain separate integration work. See [the method guide](Yuna.md#optional-component-methods-completed-on-28-october) for exact ownership and limits.
 
-## Entities and remaining scaffolds
+## Run and verify
 
-Entity files contain real classes and mappings. Their methods use supplied values only; callers must perform authorization, locking and related writes in one transaction. Comments explain decisions such as immutable original evidence, uncertain effects and payload retention. Other TypeScript files still describe their planned components and methods.
-
-Services coordinate I/O and workflows. Policies evaluate supplied values. Entities protect their local state transitions. Adapters communicate with external systems. A service does not need to exist for every entity.
-
-Within a feature, `dto/` holds named use-case inputs and serialized outputs; `contracts.ts` holds trusted bindings and shared domain values; `entities/` holds private persistence records. Related DTOs share a use-case file. DTOs describe fields and validation, not database tables or business methods. Feature services use native ORM repositories/query APIs in the caller's transaction; custom repositories are introduced only for concrete queries that warrant them.
-
-Discord handlers fill the transport/controller role. They validate feature arguments and separately supply verified caller identity. Module files name the services other modules may inject; policies, entity registrations and repositories stay private. DTO and schema files are plain imports rather than injectable services.
-
-The scaffold reserves all five business contexts; it does not commit them all to the first release. Optional governance and kick behavior are marked in their files. Memory and Debates are staged features. Add future features through a clear owner, narrow contracts and ordinary application composition; create new files when a concrete feature needs them.
-
-## Working boundaries
-
-- A context owns its entities and accepted business output, and uses another context only through its public contract/service boundary.
-- Moderation owns the original-capture-to-observation-to-assessment workflow. Edits/deletion never replace the original evidence; an uncaptured original remains missing. AI handlers execute individual prepared tasks.
-- Provider modules do not import contexts, Jobs, Discord or one another.
-- Discord handlers live in `apps/bot`; the Discord adapters do not import feature services.
-- Task/result binding, durable action intent and uncertainty are explicit. No exactly-once external-effect guarantee is assumed.
-- Personal memory, moderation evidence and debate transcripts have separate ownership and retention.
-
-Entity tests and PostgreSQL constraints enforce the implemented storage rules. Application boundaries and runtime transaction/permission checks still need implementation.
-
-## Build and verify
-
-Use Node.js 24 or newer. Dependencies and their lockfile are pinned.
+Node 24 or newer and PostgreSQL server tools are required for the complete test suite.
 
 ```sh
 npm ci
-npm run typecheck
-npm test
-npm run test:db
+npm run build
+npm run check:docs
+npm run test:all
 ```
 
-The database tests require PostgreSQL `initdb`, `pg_ctl` and `psql` on PATH. They create a private temporary cluster using a Unix socket, run the complete schema and persistence checks, then stop and remove that cluster. They do not connect to an existing database or Discord.
+Prepare role-specific `.env` files from the examples, then follow the local guide before running:
 
-`npm run schema:sql` prints the core schema for review; append `-- --include-staged` to include optional governance, Memory and Debates. The generator combines entity mappings with scoped foreign keys and cross-row guards. Using MikroORM's schema generator alone omits those extra guards. No application startup synchronizes a schema, and no migration has been deployed.
+```sh
+npm run db:prepare
+npm run register:commands
+npm run local:worker
+```
 
-## Implementation boundaries
+Run `npm run local:bot` in a separate terminal. `db:prepare` uses an administrator connection; the bot and worker never apply migrations at startup. `register:commands` upserts only the Yuna guild command. Fake providers need no API keys and incur no provider charges. Fake assessments stay uncertain and cannot authorize sanctions.
 
-- Automatic policy bans need supported original-evidence findings and no staff review.
-- Unbans require an explicit request through Yuna from a current Discord administrator. The entity requires the exact internal request/authority record; services must still obtain and recheck live permissions.
-- Original evidence, accepted reasons and action intent commit before dispatch. Intake/Jobs payload cleanup does not remove Moderation's retained copy.
-- Default schema registration includes 27 core entities. Thirteen staged entities are opt-in; their classes do not enable those features.
-- Database revisions detect competing ORM updates. They do not replace the source/target locks and transaction boundaries specified in the architecture.
+Use `/yuna bootstrap` as the current guild owner, then `/yuna configure` to approve the selected configuration file. `/yuna status` reports installation and policy revisions. Members use `/yuna usage`, `/yuna limit` and `/yuna limit-clear` for their own allowances. Staff capabilities remain explicit and scoped; native Discord permissions alone do not enroll a moderator in Yuna.
 
-Next implementation work is service transactions, live authorization and Discord/provider adapters, followed by reviewed deployment migrations and role grants. This change does not implement those workflows.
+## Find your way through the code
+
+| Start here | Purpose |
+| --- | --- |
+| [Yuna.md](Yuna.md) | Function guide, data flow, implementation reasons, verification and remaining optional scope. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to make a small change, document it and verify its boundaries. |
+| [apps/bot/bot.module.ts](apps/bot/bot.module.ts) | Composition root: connects Discord, feature owners, maintenance and cleanup. |
+| [apps/ai-worker/ai-worker.module.ts](apps/ai-worker/ai-worker.module.ts) | Bounded worker lanes and explicit provider routes. |
+| [src/contexts](src/contexts) | Business owners: Administration, Community, Moderation, Memory and Debates. |
+| [src/discord](src/discord) | SDK normalization, native facts and narrow outbound transports. No business entity access. |
+| [src/ai](src/ai) | Bounded provider adapters and versioned capability input/output contracts. |
+| [src/platform/jobs](src/platform/jobs) | Durable tasks, prepared inputs, attempts, results, acknowledgments and wake-up hints. |
+| [src/platform/usage](src/platform/usage) | Exact accounting, personal limits and conservative unresolved reservations. |
+| [src/platform/db/migrations](src/platform/db/migrations) | Reviewed schema upgrades and restricted worker SQL entry points. |
+| [tests/README.md](tests/README.md) | Unit, integration, concurrency and operational verification. |
+
+Every TypeScript file starts with its purpose; named functions and methods explain their role. `check:docs` catches missing comments, while code review checks that the explanations remain accurate. JSON settings are explained in the adjacent configuration guide because standard JSON does not permit comments. Historical migration checksums are preserved.
+
+## How work moves through Yuna
+
+```mermaid
+flowchart LR
+  Discord[Discord ingress] --> Owner[Feature owner]
+  Owner --> DB[(PostgreSQL task and input)]
+  DB --> Claim[Restricted worker claim]
+  Claim --> Provider[Bounded provider call]
+  Provider --> Result[(Durable result)]
+  Result --> Accept[Owner validates and accepts]
+  Accept --> Intent[(Reply or action intent)]
+  Intent --> Send[Fresh checks and one transport attempt]
+  Send --> Outcome[(Known or uncertain outcome)]
+```
+
+The owner decides what the result means. A model cannot grant permissions, select a sanction target, choose the next workflow stage or call Discord. Input disclosure, owner acceptance and external dispatch each recheck the relevant bindings. Notifications only wake consumers; database state remains authoritative.
+
+A timeout does not mean an operation failed. Unknown provider spend stays reserved, and an unknown Discord send/sanction is reconciled by exact attributable evidence. Yuna does not promise exactly-once remote effects or blindly resend after losing a response.
+
+## Moderation scope
+
+Original-message capture is independent of conversation replies. Edits and deletions do not replace retained original evidence. Reports are allegations and cannot manufacture an original message. Text observation is followed by typed rule assessment; the owner applies explicit exclusions, evidence requirements and action mappings. Multiple rules share one observation and produce separately bound findings before one final action is selected.
+
+Staff ban/unban admission checks the current native permissions, scoped Yuna grant, actor and exact target. Unban requires an explicit request by a current Discord administrator. Automatic policy actions preserve the accepted findings and exact allowed operation. Shared target execution prevents conflicting sanctions across installation generations. Discord role hierarchy and permissions are checked before dispatch.
+
+The initial route covers one original text message. It does not inspect image contents, detect coordinated raids, aggregate spam rates or infer recurring misconduct from warnings. A harmless original later edited into harmful text is outside the original-only evidence policy. These are explicit optional extensions, not protections established by passing tests.
+
+## Operating boundaries
+
+Run one bot owner per guild. PostgreSQL session ownership enforces this restriction. Worker concurrency is shared across routes; start with one lane and use observed queue/provider timings before raising it. Logs contain bounded operational classifications and reference IDs, not message bodies or credentials.
+
+Retention erases eligible payloads and metadata in bounded batches. Removal fences new work first and records every enabled owner's cleanup disposition. Unresolved charges/effects and lineage/deduplication records may retain minimal references according to the documented owner policy; retained metadata is never presented as erased.
+
+Tests use fake external adapters and isolated PostgreSQL databases. They verify lifecycle and authorization behavior, not the quality of a live model or production throughput. Live Discord/provider acceptance and deployment checks remain operator work described in the setup and operations guides.

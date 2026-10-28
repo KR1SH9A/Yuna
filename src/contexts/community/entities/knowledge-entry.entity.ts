@@ -1,3 +1,4 @@
+/** Store immutable approved text with independently revisioned visibility, retirement and payload retention. */
 import { createHash } from 'node:crypto';
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
@@ -36,6 +37,7 @@ export class KnowledgeEntry extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Capture approved content and provenance once, with explicit visibility and a bounded retention deadline. */
   constructor(input: KnowledgeEntryInput) {
     super(input);
     invariant(input.content.length > 0 && input.content.length <= 100_000, 'Knowledge content must be bounded and nonempty');
@@ -64,6 +66,7 @@ export class KnowledgeEntry extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Exclude this revision from new retrieval and optionally link an approved same-installation replacement. */
   retire(expectedRowRevision: number, at: Date, replacement?: KnowledgeEntry): void {
     this.check(expectedRowRevision, at);
     invariant(this.retiredAt === null, 'Knowledge is already retired');
@@ -76,6 +79,7 @@ export class KnowledgeEntry extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Erase text and provenance while preserving only retirement and lineage needed for pending-use checks. */
   purgePayload(reason: string, expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     invariant(reason.length > 0 && reason.length <= 120, 'A bounded purge reason is required');
@@ -88,6 +92,7 @@ export class KnowledgeEntry extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Require a supported visibility version and unique bounded channel identities. */
   private validateVisibility(value: KnowledgeVisibility): void {
     invariant(value.schemaVersion === 1, 'Unsupported visibility schema');
     if (value.kind === 'channels') {
@@ -96,10 +101,12 @@ export class KnowledgeEntry extends ScopedEntity {
       invariant(new Set(value.channelIds).size === value.channelIds.length, 'Visibility channels must be unique');
     }
   }
+  /** Reject stale row revisions and backwards transition times before changing owner state. */
   private check(expected: number, at: Date): void {
     assertDate(at, 'at');
     invariant(this.rowRevision === expected, 'Stale knowledge revision');
     invariant(at >= this.updatedAt && at >= this.approvedAt, 'Transition cannot precede approval or previous changes');
   }
+  /** Advance the access revision and copy the transition timestamp after a validated change. */
   private touch(at: Date): void { this.rowRevision = nextRevision(this.rowRevision); this.updatedAt = new Date(at); }
 }

@@ -1,3 +1,4 @@
+/** Track each owner’s durable intake receipt, lease, retry and final admission outcome. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertUuid, invariant, type ScopedEntityInput } from '../../db/entity-values.js';
@@ -38,6 +39,7 @@ export class IntakeDelivery extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 0;
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Create one owner-specific receipt for an intake event with a bounded processing horizon. */
   constructor(input: IntakeDeliveryInput) {
     super(input);
     assertUuid(input.eventId);
@@ -50,6 +52,7 @@ export class IntakeDelivery extends ScopedEntity {
     this.updatedAt = new Date(this.createdAt);
   }
 
+  /** Acquire or recover an eligible receipt lease and advance its generation to fence earlier workers. */
   claim(executor: string, now: Date, leaseUntil: Date, expectedRevision: number): number {
     this.checkWrite(now, expectedRevision);
     assertDate(leaseUntil, 'leaseUntil');
@@ -68,6 +71,7 @@ export class IntakeDelivery extends ScopedEntity {
     return this.claimGeneration;
   }
 
+  /** Finish only the current claim and optionally link the owner workflow admitted in the same transaction. */
   complete(generation: number, outcome: IntakeOutcome, ownerRecordRef: string | null, now: Date): void {
     this.checkClaim(generation, now);
     if (ownerRecordRef !== null) assertUuid(ownerRecordRef);
@@ -79,6 +83,7 @@ export class IntakeDelivery extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Return a failed current claim to a future eligible retry while preserving its attempt history. */
   scheduleRetry(generation: number, nextAttemptAt: Date, reason: string, now: Date): void {
     this.checkClaim(generation, now);
     assertDate(nextAttemptAt, 'nextAttemptAt');
@@ -99,6 +104,7 @@ export class IntakeDelivery extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Pause a receipt with an explicit routing reason when no compatible owner can process it. */
   park(generation: number, reason: string, now: Date): void {
     this.checkClaim(generation, now);
     invariant(reason.length > 0, 'Parking reason is required');
@@ -108,6 +114,7 @@ export class IntakeDelivery extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Make a parked receipt ready after routing repair without extending its processing deadline. */
   resume(now: Date, expectedRevision: number): void {
     this.checkWrite(now, expectedRevision);
     invariant(this.state === 'PARKED', 'Only parked receipts resume');
@@ -131,15 +138,19 @@ export class IntakeDelivery extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Reject stale receipt revisions and timestamps before changing receipt state. */
   private checkWrite(now: Date, expectedRevision: number): void {
     assertDate(now, 'now');
     invariant(now >= this.updatedAt && expectedRevision === this.rowRevision, 'Stale receipt write');
     invariant(this.rowRevision < 2_147_483_647, 'Receipt revision exhausted');
   }
+  /** Require the active lease generation before acknowledging or rescheduling a receipt. */
   private checkClaim(generation: number, now: Date): void {
     this.checkWrite(now, this.rowRevision);
     invariant(this.state === 'RUNNING' && generation === this.claimGeneration && this.leaseUntil !== null && now < this.leaseUntil, 'Stale receipt claim');
   }
+  /** Remove executor and lease fields whenever a receipt stops being actively claimed. */
   private clearLease(): void { this.leaseOwner = null; this.leaseUntil = null; }
+  /** Advance the access revision and copy the transition timestamp after a validated change. */
   private touch(now: Date): void { this.rowRevision++; this.updatedAt = new Date(now); }
 }

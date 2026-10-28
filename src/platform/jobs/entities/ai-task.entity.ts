@@ -1,12 +1,14 @@
+/** Persist technical execution state and exact owner validity bindings without deciding whether results are acceptable. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
-import { assertDate, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../db/entity-values.js';
+import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../db/entity-values.js';
 
 export type TaskSourceUse = 'original_evidence' | 'current_source' | 'none';
 export type AiTaskState = 'READY' | 'RUNNING' | 'RETRY_WAIT' | 'PARKED' | 'TERMINAL';
 
 /** Only bindings used by this owner are present; these are trusted admission facts. */
 export interface TaskValidityBindings {
+  knowledgeBindings?: { entryId: string; revision: number; contentHash: string; channelId: string }[];
   sourceEventId?: string;
   sourceRevision?: number;
   evidenceRevisionId?: string;
@@ -16,15 +18,27 @@ export interface TaskValidityBindings {
   safetyRevision?: number;
   audienceRevision?: number;
   ownerRevision?: number;
+  transcriptSnapshotId?: string;
+  rubricRevisionId?: string;
 }
 
+/** Reject malformed source, privacy and approved-context references before an owner registers work. */
 export function validateTaskBindings(sourceUse: TaskSourceUse, bindings: TaskValidityBindings): void {
   invariant(['original_evidence', 'current_source', 'none'].includes(sourceUse), 'Unsupported source use');
-  for (const value of [bindings.sourceEventId, bindings.evidenceRevisionId, bindings.policyRevisionId, bindings.privacyScopeId]) {
+  for (const value of [bindings.sourceEventId, bindings.evidenceRevisionId, bindings.policyRevisionId, bindings.privacyScopeId,
+    bindings.transcriptSnapshotId, bindings.rubricRevisionId]) {
     if (value !== undefined) assertUuid(value);
   }
   for (const value of [bindings.sourceRevision, bindings.privacyRevision, bindings.safetyRevision, bindings.audienceRevision, bindings.ownerRevision]) {
     if (value !== undefined) assertNonNegativeInteger(value, 'Validity revision');
+  }
+  if (bindings.knowledgeBindings !== undefined) {
+    invariant(Array.isArray(bindings.knowledgeBindings) && bindings.knowledgeBindings.length <= 5
+      && new Set(bindings.knowledgeBindings.map(value => value.entryId)).size === bindings.knowledgeBindings.length, 'Invalid knowledge bindings');
+    for (const binding of bindings.knowledgeBindings) {
+      assertUuid(binding.entryId); assertDiscordId(binding.channelId); assertNonNegativeInteger(binding.revision, 'Knowledge revision');
+      invariant(binding.revision >= 1 && /^[a-f0-9]{64}$/.test(binding.contentHash), 'Invalid approved knowledge binding');
+    }
   }
   if (sourceUse === 'original_evidence') invariant(bindings.evidenceRevisionId !== undefined, 'Original evidence requires a retained evidence revision');
   if (sourceUse === 'current_source') invariant(bindings.sourceEventId !== undefined && bindings.sourceRevision !== undefined, 'Current source requires an observation and revision');
@@ -84,6 +98,7 @@ export class AiTask extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: 'datetime', columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Validate immutable routing, provider configuration and source bindings before a task becomes claimable. */
   constructor(input: AiTaskInput) {
     super(input);
     for (const value of [input.owner, input.operationKey, input.kind, input.inputHash, input.providerConfigurationVersion, input.modelVersion, input.promptVersion]) {
@@ -162,6 +177,7 @@ export class AiTask extends ScopedEntity {
     this.parkReason = reason;
   }
 
+  /** Return a parked task to ready only while its original deadline remains valid. */
   resumeAfterRoutingRepair(now: Date): void {
     invariant(this.state === 'PARKED', 'Task is not parked');
     assertDate(now, 'Resume time');
@@ -184,10 +200,12 @@ export class AiTask extends ScopedEntity {
     this.parkReason = null;
   }
 
+  /** Require the active attempt ID and generation so a stale executor cannot mutate task state. */
   assertCurrentAttempt(attemptId: string, generation: number): void {
     invariant(this.state === 'RUNNING' && this.activeAttemptId === attemptId && this.executionGeneration === generation, 'Attempt no longer owns execution authority');
   }
 
+  /** Advance the bounded row revision and update time so competing writes can detect stale state. */
   private advanceRevision(now: Date): void {
     assertDate(now, 'Update time');
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');

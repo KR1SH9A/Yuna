@@ -1,3 +1,4 @@
+/** Bind a staged approver decision to one exact proposal hash and current authority revision. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertUuid, copyJson, invariant, type JsonObject, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -34,6 +35,7 @@ export class PlanApproval extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly purgeAfter: Date;
 
+  /** Bind this approver to the exact proposal, authorization revision and approval validity window. */
   constructor(input: PlanApprovalInput) {
     super(input);
     assertUuid(input.planId);
@@ -54,11 +56,13 @@ export class PlanApproval extends ScopedEntity {
     this.updatedAt = new Date(input.approvedAt);
   }
 
+  /** Check that this approval still matches the proposal hash, authority revision, validity window and active state. */
   isCurrent(at: Date): boolean {
     assertDate(at, 'at');
     return !this.withdrawnAt && !this.invalidatedAt && at >= this.approvedAt && at < this.expiresAt;
   }
 
+  /** Withdraw this approval before it can authorize further work, retaining its original reference for audit. */
   withdraw(at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     assertDate(at, 'at');
@@ -68,6 +72,7 @@ export class PlanApproval extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Invalidate a still-pending proposal or approval with a bounded reason; consumed authority is never silently reused. */
   invalidate(reasonCode: string, at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     assertDate(at, 'at');
@@ -78,6 +83,7 @@ export class PlanApproval extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Advance optimistic concurrency metadata after a valid local state transition. */
   private advanceRevision(at: Date): void {
     this.rowRevision += 1;
     this.updatedAt = new Date(at);

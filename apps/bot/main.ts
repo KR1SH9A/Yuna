@@ -1,19 +1,13 @@
-/**
- * Planned component: BotBootstrap
- * Kind: Runtime entry point
- * Owner: Bot application
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Start the Discord-facing runtime and its business workflow handlers.
- *
- * Planned methods:
- * - bootstrap: Read bot-scoped configuration, compose BotModule, connect required infrastructure,
- *   and start enabled Gateway, HTTP, completion and recovery entry points.
- * - shutdown: Stop accepting work, drain bounded in-flight operations, and close Discord, queue
- *   and database resources without losing recorded progress.
- *
- * Boundaries:
- * Holds the Discord token and bot database role; no model-provider credentials. Bootstrap contains
- * lifecycle wiring, not moderation or conversation decisions.
- */
+/** Compose the bot application and allow injected dependencies for offline startup tests. */
+import { loadBotConfig, type BotRuntimeConfig, type EnvironmentVariables } from '../../src/platform/config/runtime-config.js';
+import { startApplication, type RunningApplication, type RuntimeResource } from '../../src/platform/runtime/application.js';
+import { createBotResources } from './bot.module.js';
+
+/** Validate before composition or I/O. Imports are inert; the separate CLI owns process signals. */
+export async function bootstrap(
+  env: EnvironmentVariables,
+  options: { signal?: AbortSignal; onFailure?: () => void; compose?: (config: BotRuntimeConfig) => readonly RuntimeResource[] } = {},
+): Promise<RunningApplication> {
+  const config = loadBotConfig(env);
+  return startApplication((options.compose ?? createBotResources)(config), options.signal, options.onFailure);
+}

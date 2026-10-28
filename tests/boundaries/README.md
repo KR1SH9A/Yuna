@@ -1,18 +1,11 @@
-# Planned boundary checks
+# Executable import boundaries
 
-No tests are implemented yet. Future checks should verify:
+`imports.test.ts` parses TypeScript imports/exports and checks all source modules in `src` and `apps`:
 
-- Only composition roots and inbound handlers wire feature public APIs to infrastructure.
-- Context-private entities and repositories do not cross context boundaries.
-- Jev and LLM do not import each other, business contexts, Jobs or Discord.
-- Worker application code cannot import privileged feature repositories or Discord adapters.
-- Discord adapters and generic job transport do not depend on business contexts.
-- Policy and entity transition methods do not perform external I/O.
-- Direct and transitive imports contain no dependency cycles or accidental entity/provider exports.
-- Feature request/response DTOs live with their owner; handlers consume them without feature services importing `apps/bot` or a transport-owned command layer.
-- DTOs and public contracts contain no live ORM entities, lazy relations, SDK instances or provider clients. AI capability schemas remain separate from feature request DTOs.
-- Bot handlers inject only the providers explicitly exported by feature modules; they cannot bypass ownership by re-registering private services or repositories.
-- Policies, entity registrations and native ORM repositories remain private. DTO/type declarations are not registered as injectable providers.
-- Static task registration remains a lookup, with no injectable registry or dynamic method discovery requirement.
+- LLM/Jev/embedding adapters cannot import one another, business contexts, Jobs, Discord or application composition.
+- Worker composition cannot import Discord or business contexts.
+- Discord cannot import feature contexts or applications.
+- Feature contexts cannot import application composition.
+- Local imports must resolve, and runtime imports must contain no cycles (type-only imports are excluded from cycle analysis).
 
-Boundary rules belong in automated tooling once real imports exist. Comment-only files do not demonstrate that the runtime boundaries are enforced.
+These checks cover the stated executable boundaries. They do not prove that every DTO is safe, that all cross-context entity access is absent, or that every task kind has a handler and owner acceptor; those need targeted workflow tests as each route is enabled.

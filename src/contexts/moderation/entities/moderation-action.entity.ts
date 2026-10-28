@@ -1,3 +1,4 @@
+/** Persist exact staff or policy moderation intent and its guarded dispatch/outcome state machine. */
 import { nextCounter } from './moderation-values.js';
 import { createHash } from 'node:crypto';
 import { Collection } from '@mikro-orm/core';
@@ -43,8 +44,14 @@ export type ModerationActionInput = ModerationActionBaseInput & (
   | { operationPayload: Exclude<ModerationOperation, { kind: 'unban' }>; authority: ModerationAuthority }
   | { operationPayload: Extract<ModerationOperation, { kind: 'unban' }>; authority: AdminUnbanRequestAuthority }
 );
+/** Use a fixed field order so PostgreSQL JSONB key ordering cannot change an exact operation's identity. */
 export function hashModerationOperation(targetUserId: string, operation: ModerationOperation): string {
-  return createHash('sha256').update(JSON.stringify({ targetUserId, operation })).digest('hex');
+  const canonical = operation.kind === 'warning' ? { schemaVersion: operation.schemaVersion, kind: operation.kind, text: operation.text,
+    destination: operation.destination.kind === 'channel' ? { kind: 'channel', channelId: operation.destination.channelId } : { kind: 'direct_message' },
+    allowedMentions: { users: operation.allowedMentions.users, roles: operation.allowedMentions.roles, everyone: operation.allowedMentions.everyone } }
+    : operation.kind === 'ban' ? { schemaVersion: operation.schemaVersion, kind: operation.kind, reason: operation.reason, deleteMessageSeconds: operation.deleteMessageSeconds }
+      : { schemaVersion: operation.schemaVersion, kind: operation.kind, reason: operation.reason };
+  return createHash('sha256').update(JSON.stringify({ targetUserId, operation: canonical })).digest('hex');
 }
 export type ModerationActionState = 'READY' | 'DISPATCHED' | 'UNKNOWN' | 'CONFIRMED' | 'FAILED' | 'CANCELED';
 export interface ModerationOutcome {
@@ -106,6 +113,7 @@ export class ModerationAction extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Validate one exact operation and its exclusive staff or accepted-policy authority before persistence. */
   constructor(input: ModerationActionInput) {
     super(input);
     assertDiscordId(input.targetUserId);
@@ -180,6 +188,7 @@ export class ModerationAction extends ScopedEntity {
     this.updatedAt = new Date(this.createdAt);
   }
 
+  /** Consume this ready action's current generation while its safety binding and retained evidence remain valid. */
   claimDispatch(input: ActionDispatchClaim): number {
     this.check(input.expectedRowRevision, input.at);
     assertUuid(input.attemptId);
@@ -196,6 +205,7 @@ export class ModerationAction extends ScopedEntity {
     return this.executionGeneration;
   }
 
+  /** Apply only the active attempt's observed result; stale executors cannot overwrite newer state. */
   recordOutcome(attemptId: string, generation: number, outcome: ModerationOutcome, expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     invariant(this.activeAttemptId === attemptId && this.executionGeneration === generation && this.state === 'DISPATCHED', 'Stale dispatch outcome');
@@ -209,6 +219,7 @@ export class ModerationAction extends ScopedEntity {
     this.applyOutcome(outcome, at);
   }
 
+  /** Represent a future retry only after definitive non-application; the executable owner deliberately never invokes this optional path. */
   scheduleRetry(at: Date, expectedRowRevision: number, now: Date): void {
     this.check(expectedRowRevision, now);
     assertDate(at, 'nextAttemptAt');
@@ -220,6 +231,7 @@ export class ModerationAction extends ScopedEntity {
     this.touch(now);
   }
 
+  /** Cancel only unclaimed intent; an in-flight or uncertain effect must retain its recorded uncertainty. */
   cancelBeforeDispatch(reason: string, expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     invariant(this.state === 'READY', 'An in-flight or unknown action cannot be canceled');
@@ -230,6 +242,7 @@ export class ModerationAction extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Erase operation content and cancel unsent work without pretending an uncertain external effect was undone. */
   purgePayload(at: Date, reason: string, expectedRowRevision: number): void {
     this.check(expectedRowRevision, at);
     invariant(reason.length > 0 && reason.length <= 120, 'A bounded purge reason is required');
@@ -241,6 +254,7 @@ export class ModerationAction extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Map a normalized observed outcome to its terminal or unresolved state without inferring Discord state. */
   private applyOutcome(outcome: ModerationOutcome, at: Date): void {
     invariant(outcome.code.length > 0 && outcome.code.length <= 120, 'Outcome requires a bounded code');
     if (outcome.discordMessageId) assertDiscordId(outcome.discordMessageId);
@@ -249,10 +263,12 @@ export class ModerationAction extends ScopedEntity {
     this.outcomeSummary = copyJson(outcome);
     this.touch(at);
   }
+  /** Reject stale row revisions and transition timestamps that precede an already recorded change. */
   private check(expected: number, at: Date): void {
     assertDate(at, 'at');
     invariant(this.rowRevision === expected, 'Stale action revision');
     invariant(at >= this.updatedAt, 'Transition time cannot move backwards');
   }
+  /** Advance the persistence revision and timestamp after a validated action transition. */
   private touch(at: Date): void { this.rowRevision = nextCounter(this.rowRevision); this.updatedAt = new Date(at); }
 }

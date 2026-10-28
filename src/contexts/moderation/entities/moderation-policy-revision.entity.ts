@@ -1,3 +1,4 @@
+/** Immutable, versioned moderation criteria; decision thresholds are explicit operator policy. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -5,7 +6,8 @@ import { assertDate, assertDiscordId, assertNonNegativeInteger, copyJson, invari
 export interface ModerationRule { id: string; version: string; description: string; enabled: boolean }
 export interface PolicyRequiredEvidence { ruleId: string; originalBody: boolean; originalMedia: boolean; establishedAuthor: boolean }
 export interface PolicyExclusion { id: string; description: string; ruleIds: string[] }
-export interface PolicyEvaluationConfiguration { schemaVersion: 1; observationModel: string; assessmentModel: string; promptVersion: string }
+export interface PolicyDecisionThresholds { minimumConfidence: number; yesThreshold: number; noThreshold: number }
+export interface PolicyEvaluationConfiguration { schemaVersion: 1; observationModel: string; assessmentModel: string; promptVersion: string; decisionThresholds?: PolicyDecisionThresholds }
 export interface PolicyActionMapping { ruleId: string; supportedDisposition: 'violation' | 'suspicion'; action: 'ban' | 'warning' | 'none'; deleteMessageSeconds: number }
 export interface ModerationPolicyRevisionInput extends ScopedEntityInput {
   revisionNumber: number;
@@ -35,6 +37,7 @@ export class ModerationPolicyRevision extends ScopedEntity {
   @Property({ type: 'text' }) readonly publisherRequestId: string;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly publishedAt: Date;
 
+  /** Copy validated revision values; drafts may omit thresholds but cannot authorize enforcement. */
   constructor(input: ModerationPolicyRevisionInput) {
     super(input);
     assertNonNegativeInteger(input.revisionNumber, 'revisionNumber');
@@ -42,6 +45,15 @@ export class ModerationPolicyRevision extends ScopedEntity {
     assertDate(input.publishedAt, 'publishedAt');
     invariant(input.publisherRequestId.length > 0, 'Publication requires authenticated request provenance');
     invariant(input.rules.length > 0 && input.rules.length <= 100, 'Policy requires a bounded rule set');
+    const thresholds = input.evaluationConfiguration.decisionThresholds;
+    if (thresholds) {
+      invariant(Number.isFinite(thresholds.minimumConfidence) && thresholds.minimumConfidence > 0.5 && thresholds.minimumConfidence <= 1,
+        'Minimum confidence must be greater than one half and at most one');
+      invariant(Number.isFinite(thresholds.yesThreshold) && thresholds.yesThreshold > 0.5 && thresholds.yesThreshold <= 1,
+        'Yes threshold must be greater than one half and at most one');
+      invariant(Number.isFinite(thresholds.noThreshold) && thresholds.noThreshold >= 0 && thresholds.noThreshold < 0.5,
+        'No threshold must be nonnegative and less than one half');
+    }
     const rules = new Set(input.rules.map((rule) => rule.id));
     invariant(rules.size === input.rules.length && !rules.has(''), 'Rule identifiers must be nonempty and unique');
     for (const requirement of input.requiredEvidence) invariant(rules.has(requirement.ruleId), 'Evidence requirement refers to an unknown rule');

@@ -1,8 +1,9 @@
+/** Retain immutable ordered Debate source observations and explicit participant submissions. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
 
-export type TranscriptEntryKind = 'message' | 'edit' | 'deletion' | 'gap';
+export type TranscriptEntryKind = 'message' | 'edit' | 'deletion' | 'gap' | 'submission';
 export interface TranscriptContent {
   schemaVersion: 1;
   // Omission means not observed; null means explicitly unavailable. Neither fabricates empty text.
@@ -34,7 +35,7 @@ export interface TranscriptEntryInput extends ScopedEntityInput {
 @Unique({ properties: ['installationId', 'guildId', 'sessionId', 'sourceEventKey'] })
 @Index({ properties: ['purgeAfter'] })
 @Check({ name: 'transcript_entry_check_1', expression: '"sequence" > 0' })
-@Check({ name: 'transcript_entry_check_2', expression: `"kind" in ('message', 'edit', 'deletion', 'gap')` })
+@Check({ name: 'transcript_entry_check_2', expression: `"kind" in ('message', 'edit', 'deletion', 'gap', 'submission')` })
 export class TranscriptEntry extends ScopedEntity {
   @Property({ type: 'uuid' }) readonly sessionId: string;
   @Property({ type: 'integer' }) readonly sequence: number;
@@ -53,6 +54,7 @@ export class TranscriptEntry extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Validate attribution, chronology and retention before copying source content. */
   constructor(input: TranscriptEntryInput) {
     super(input);
     assertUuid(input.sessionId);
@@ -67,7 +69,8 @@ export class TranscriptEntry extends ScopedEntity {
     assertDate(input.purgeAfter, 'purgeAfter');
     input.artifactIds.forEach(assertUuid);
     invariant(input.purgeAfter > input.capturedAt, 'Entry retention is invalid');
-    invariant(input.kind === 'gap' || input.messageId !== null, 'Source entries require a message ID');
+    invariant(input.kind === 'gap' || input.kind === 'submission' || input.messageId !== null, 'Source entries require a message ID');
+    invariant(input.kind !== 'submission' || (input.authorId !== null && input.messageId === null), 'Explicit submissions require their authenticated author');
     invariant((input.kind !== 'message' && input.kind !== 'edit') || input.authorId !== null || input.coverage.reasons.length > 0,
       'Missing attribution must have an explicit coverage limitation');
     invariant((input.kind !== 'deletion' && input.kind !== 'gap') || input.content === null, 'Deletion and gap observations do not supply message content');

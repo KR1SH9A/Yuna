@@ -1,3 +1,4 @@
+/** Reserve bounded units and exact money using an immutable policy snapshot until cost is resolved. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertNonNegativeInteger, assertUuid, copyJson, invariant, type JsonObject, type ScopedEntityInput } from '../../db/entity-values.js';
@@ -18,6 +19,7 @@ export function assertExactMoney(value: ExactMoney): void {
   invariant(/^[A-Z]{3}$/.test(value.currency), 'Cost requires a three-letter currency');
 }
 
+/** Validate a bounded map of exact nonnegative provider unit counts. */
 export function assertUsageUnits(units: UsageUnits): void {
   invariant(Object.keys(units).length <= 32, 'Usage must have a bounded set of unit kinds');
   for (const [name, amount] of Object.entries(units)) {
@@ -26,6 +28,7 @@ export function assertUsageUnits(units: UsageUnits): void {
   }
 }
 
+/** Require a known evidence kind, bounded reference and valid observation timestamp. */
 export function assertUsageEvidence(evidence: UsageEvidence): void {
   invariant(['provider_response', 'provider_invoice', 'confirmed_no_dispatch', 'provider_no_spend', 'billing_correction', 'timeout', 'lease_expired'].includes(evidence.kind), 'Unknown accounting evidence kind');
   invariant(evidence.reference.length > 0 && evidence.reference.length <= 512, 'Accounting evidence requires a bounded reference');
@@ -33,6 +36,7 @@ export function assertUsageEvidence(evidence: UsageEvidence): void {
   assertDate(new Date(evidence.observedAt), 'Evidence observation time');
 }
 
+/** Recognize only explicit no-dispatch or provider-confirmed zero-charge evidence. */
 export function isNoSpendEvidence(evidence: UsageEvidence): boolean {
   return evidence.kind === 'confirmed_no_dispatch' || evidence.kind === 'provider_no_spend';
 }
@@ -97,6 +101,7 @@ export class UsageReservation extends ScopedEntity {
   @Property({ type: 'datetime', columnType: 'timestamptz' }) updatedAt: Date;
   @Property({ type: 'datetime', columnType: 'timestamptz' }) readonly purgeAfter: Date;
 
+  /** Snapshot admitted policy, resolved budget windows and exact reserved cost for one operation or attempt slot. */
   constructor(input: UsageReservationInput) {
     super(input);
     for (const value of [input.feature, input.provider, input.modelRoute, input.operationKey, input.pricingVersion]) invariant(value.length > 0 && value.length <= 512, 'Reservation identifiers must be bounded and nonempty');
@@ -147,6 +152,7 @@ export class UsageReservation extends ScopedEntity {
     this.purgeAfter = new Date(input.purgeAfter);
   }
 
+  /** Bind a reserved task slot to one attempt exactly once; a reservation cannot move to another attempt. */
   bindAttempt(attemptId: string, now: Date): void {
     assertUuid(attemptId);
     invariant(this.operationKind === 'task-attempt' && this.state === 'reserved', 'Only a reserved task slot can be claimed');
@@ -182,6 +188,7 @@ export class UsageReservation extends ScopedEntity {
     this.resolutionEvidence = copyJson(evidence);
   }
 
+  /** Return capacity only after positive no-spend evidence resolves any possible provider charge. */
   releaseUnused(evidence: UsageEvidence, now: Date): void {
     invariant(this.state === 'reserved' || this.state === 'liability', 'Reservation is already resolved');
     assertUsageEvidence(evidence);
@@ -193,11 +200,13 @@ export class UsageReservation extends ScopedEntity {
     this.resolutionEvidence = copyJson(evidence);
   }
 
+  /** Allow reservation deletion only after settlement or confirmed release and accounting expiry. */
   canPurge(now: Date): boolean {
     assertDate(now, 'Retention time');
     return (this.state === 'settled' || this.state === 'released') && now >= this.purgeAfter;
   }
 
+  /** Advance the bounded row revision and update time so competing writes can detect stale state. */
   private advanceRevision(now: Date): void {
     assertDate(now, 'Accounting update time');
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
