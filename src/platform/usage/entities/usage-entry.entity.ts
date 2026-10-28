@@ -1,3 +1,4 @@
+/** Track observed provider accounting and evidence without treating uncertain execution as free usage. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../db/entity-values.js';
@@ -55,6 +56,7 @@ export class UsageEntry extends ScopedEntity {
   @Property({ type: 'datetime', columnType: 'timestamptz' }) updatedAt: Date;
   @Property({ type: 'datetime', columnType: 'timestamptz' }) readonly purgeAfter: Date;
 
+  /** Persist validated monetary or unit accounting with evidence and an explicit retention horizon. */
   constructor(input: UsageEntryInput) {
     super(input);
     assertUuid(input.reservationId);
@@ -116,6 +118,7 @@ export class UsageEntry extends ScopedEntity {
     this.reconcileAfter = null;
   }
 
+  /** Resolve an estimate to zero only when positive evidence proves no charge occurred. */
   recordNoSpend(evidence: UsageEvidence, now: Date): void {
     invariant(this.accountingState === 'estimated', 'Known spend cannot be erased by a no-spend claim');
     assertUsageEvidence(evidence);
@@ -138,6 +141,7 @@ export class UsageEntry extends ScopedEntity {
     this.reconcileAfter = null;
   }
 
+  /** Keep unresolved liability and schedule later reconciliation without overwriting known actual usage. */
   recordUncertainty(evidence: UsageEvidence, reconcileAfter: Date, now: Date): void {
     invariant(this.accountingState === 'estimated', 'A later timeout cannot overwrite known actual usage');
     assertUsageEvidence(evidence);
@@ -148,11 +152,13 @@ export class UsageEntry extends ScopedEntity {
     this.reconcileAfter = new Date(reconcileAfter);
   }
 
+  /** Allow accounting deletion only after cost is resolved and its retention horizon has passed. */
   canPurge(now: Date): boolean {
     assertDate(now, 'Retention time');
     return this.accountingState !== 'estimated' && now >= this.purgeAfter;
   }
 
+  /** Require priced billing evidence in the originally reserved currency before settlement. */
   private validateActual(cost: ExactMoney, units: UsageUnits | undefined, evidence: UsageEvidence): void {
     assertExactMoney(cost);
     invariant(cost.currency === this.currency, 'Billing cannot change the reserved currency');
@@ -161,6 +167,7 @@ export class UsageEntry extends ScopedEntity {
     invariant(['provider_response', 'provider_invoice', 'billing_correction'].includes(evidence.kind), 'Priced actual usage requires billing evidence');
   }
 
+  /** Append bounded, time-ordered evidence and advance the accounting revision without losing earlier observations. */
   private appendEvidence(evidence: UsageEvidence, now: Date): void {
     assertDate(now, 'Accounting update time');
     const observedAt = new Date(evidence.observedAt);

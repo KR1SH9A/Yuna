@@ -1,3 +1,4 @@
+/** Share bounded audience, mention, encrypted continuation and context-reference values inside Community. */
 import { assertDate, assertDiscordId, assertNonNegativeInteger, invariant } from '../../../platform/db/entity-values.js';
 
 export interface AudienceBinding {
@@ -22,6 +23,7 @@ export interface InteractionContinuation {
 }
 export interface ContextBinding { owner: 'intake' | 'knowledge' | 'memory'; recordId: string; revision: number; contentHash: string }
 
+/** Require an exact channel identity and a requester for private audiences before content can be bound to delivery. */
 export function validateAudience(binding: AudienceBinding): void {
   invariant(binding.schemaVersion === 1, 'Unsupported audience schema');
   assertDiscordId(binding.channelId);
@@ -30,11 +32,13 @@ export function validateAudience(binding: AudienceBinding): void {
   if (binding.requesterUserId) assertDiscordId(binding.requesterUserId);
   invariant(binding.visibility !== 'requester' || binding.requesterUserId !== null, 'Private audience requires its requester');
 }
+/** Reject broadcast mentions and unbounded mention allowlists before publication. */
 export function validateMentions(mentions: AllowedMentions): void {
   invariant(mentions.everyone === false, 'Replies cannot mention everyone');
   invariant(mentions.users.length <= 100 && mentions.roles.length <= 100, 'Mention allowlists must be bounded');
   for (const id of [...mentions.users, ...mentions.roles]) assertDiscordId(id);
 }
+/** Require a still-valid deferred interaction and bounded encrypted token material. */
 export function validateContinuation(value: InteractionContinuation, at: Date): void {
   invariant(value.schemaVersion === 1 && value.acknowledgment === 'deferred', 'Durable reply requires a deferred interaction');
   assertDiscordId(value.applicationId);
@@ -46,6 +50,7 @@ export function validateContinuation(value: InteractionContinuation, at: Date): 
   invariant(expiresAt > at && acknowledgedAt <= at && expiresAt > acknowledgedAt, 'Interaction continuation is not valid at this time');
   invariant(value.tokenCiphertext.length > 0 && value.tokenCiphertext.length <= 8192 && value.tokenKeyId.length > 0 && value.tokenKeyId.length <= 200, 'Encrypted continuation must be bounded');
 }
+/** Advance a nonnegative revision without exceeding the PostgreSQL integer range. */
 export function nextRevision(value: number): number {
   assertNonNegativeInteger(value, 'revision');
   invariant(value < 2147483647, 'Revision exhausted its storage range');

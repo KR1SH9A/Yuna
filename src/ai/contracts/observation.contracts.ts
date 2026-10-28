@@ -1,23 +1,31 @@
-/**
- * Planned component: ObservationContracts
- * Kind: Versioned capability schemas
- * Owner: AI contracts
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Describe bounded content observation without selecting a moderation action.
- *
- * Planned methods:
- * - None. Plain input/output values and runtime boundary schemas only.
- *
- * Planned values:
- * ObservationInput: original text, attributable source references, authorized media references,
- * required coverage and versioned observation instructions.
- * ObservationResult: supported observations, evidence references, inspected coverage, missing or
- * unsupported material and explicit uncertainty.
- *
- * Boundaries:
- * Contexts prepare inputs; LlmService interprets the capability schema. No executable operation,
- * claimed authority, or provider-generated trusted identity. Stored task identity/revisions remain
- * owned by Jobs, outside model-generated output.
- */
+/** Text observation copies attributable spans only; policy conclusions and effects belong to the feature owner. */
+export interface ObservationInput {
+  readonly schemaVersion: 1;
+  readonly evidenceRevisionId: string;
+  readonly content: string;
+  readonly sourceReferences: readonly string[];
+  readonly maxOutputTokens: number;
+}
+export interface ObservationFact {
+  readonly statement: string;
+  readonly quote: string;
+  /** Half-open JavaScript UTF-16 offsets into the exact supplied content. */
+  readonly start: number;
+  readonly end: number;
+}
+export interface ObservationResult {
+  readonly schemaVersion: 1;
+  readonly evidenceRevisionId: string;
+  readonly sourceReferences: readonly string[];
+  readonly outcome: 'observed' | 'uncertain';
+  readonly uncertaintyReason: 'fake_provider' | null;
+  readonly inspectedBody: boolean;
+  readonly facts: readonly ObservationFact[];
+  readonly limitations: readonly string[];
+  readonly providerRequestId: string | null;
+  readonly requestedModel: string;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+}

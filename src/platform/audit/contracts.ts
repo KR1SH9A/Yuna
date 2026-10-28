@@ -2,7 +2,10 @@
  * Planned component: Audit contracts
  * Kind: Plain audit-reference and correlation boundary types
  * Owner: Platform / Audit
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Executable audit envelopes are defined in entities/audit-entry.entity.ts and validated by audit.recorder.ts. The generic catalog below is a design reference.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Describe who or what authorized a change, what changed, and its durable references.

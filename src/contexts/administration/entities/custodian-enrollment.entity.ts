@@ -1,3 +1,4 @@
+/** Track a staged custodian invitation and its acceptance; an invitation alone grants no authority. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type JsonObject, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -44,6 +45,7 @@ export class CustodianEnrollment extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly purgeAfter: Date;
 
+  /** Create a pending invitation with its authenticated proposal identity and expiry; acceptance is a separate transition. */
   constructor(input: CustodianEnrollmentInput) {
     super(input);
     assertDiscordId(input.candidateId);
@@ -67,6 +69,7 @@ export class CustodianEnrollment extends ScopedEntity {
     this.updatedAt = new Date(this.createdAt);
   }
 
+  /** Record the invited custodian's authenticated acceptance once, while the invitation is still eligible. */
   recordAcceptance(candidateId: string, requestId: string, at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     assertDate(at, 'at');
@@ -94,6 +97,7 @@ export class CustodianEnrollment extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Close an outstanding invitation without enrolling its recipient or granting any capability. */
   reject(reasonCode: string, at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     if (this.status === 'rejected') return;
@@ -106,6 +110,7 @@ export class CustodianEnrollment extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Close a pending record after its expiry time; calling expiry before that deadline is rejected. */
   expire(at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     assertDate(at, 'at');
@@ -115,6 +120,7 @@ export class CustodianEnrollment extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Advance optimistic concurrency metadata after a valid local state transition. */
   private advanceRevision(at: Date): void {
     this.rowRevision += 1;
     this.updatedAt = new Date(at);

@@ -1,3 +1,4 @@
+/** Expose only restricted database worker entry points for claim, input disclosure, start and completion. */
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { ReplyGenerationInput } from '../../ai/contracts/generation.contracts.js';
 import { invariant } from '../db/entity-values.js';
@@ -7,6 +8,7 @@ export type { ConversationTaskOutcome, WorkerClaim } from './conversation-task.c
 
 /** Restricted SQL functions are the worker's entire database surface; no business metadata. */
 export class WorkerTaskStore {
+  /** Keep the worker connection private; all workflow access goes through restricted SQL entry points. */
   constructor(private readonly orm: MikroORM) {}
 
   /** Claim one compatible task without revealing its input or bypassing the daily cap. */

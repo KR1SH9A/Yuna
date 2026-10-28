@@ -1,3 +1,4 @@
+/** Test task state transitions, attempt ownership and exact accounting behavior on isolated entities. */
 import assert from 'node:assert/strict';
 import { test } from '@jest/globals';
 import { AiTask } from '../../src/platform/jobs/entities/ai-task.entity.js';
@@ -8,19 +9,25 @@ import { TaskResult } from '../../src/platform/jobs/entities/task-result.entity.
 import { UsageEntry } from '../../src/platform/usage/entities/usage-entry.entity.js';
 import { UsageReservation, assertExactMoney, type UsageEvidence } from '../../src/platform/usage/entities/usage-reservation.entity.js';
 
+/** Create an independent UUID for a fixture-owned record. */
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+/** Convert relative fixture seconds to a deterministic timestamp. */
 const at = (seconds: number) => new Date(Date.parse('2026-10-15T10:00:00.000Z') + seconds * 1000);
 const scope = { installationId: id(1), guildId: '18446744073709551615', createdAt: at(0) };
+/** Build the evidence binding needed by the task fixture. */
 const evidence = (kind: UsageEvidence['kind'], seconds: number): UsageEvidence => ({ kind, reference: `billing:${kind}:${seconds}`, observedAt: at(seconds).toISOString() });
 
+/** Build a valid task fixture with one explicitly bound owner operation. */
 function task(): AiTask {
   return new AiTask({ ...scope, id: id(2), owner: 'moderation', operationKey: 'case:1:assessment:1', kind: 'moderation.assess', schemaVersion: 1, preparedInputId: id(3), inputHash: 'sha256:input', sourceUse: 'original_evidence', validityBindings: { evidenceRevisionId: id(4) }, providerConfigurationVersion: 'provider-v1', modelVersion: 'model-v1', promptVersion: 'prompt-v1', maxAttempts: 2, deadline: at(100) });
 }
 
+/** Build an exact-money usage reservation with a fixed accounting window. */
 function reservation(): UsageReservation {
   return new UsageReservation({ ...scope, id: id(10), feature: 'moderation', provider: 'test', modelRoute: 'route-v1', operationKind: 'task-attempt', operationKey: 'task:2:attempt:1', taskId: id(2), attemptNumber: 1, reservedUnits: { input_tokens: 500 }, reservedCost: { amount: '0.100000000000000001', currency: 'USD' }, usagePolicyId: id(11), policyRevision: 1, policySnapshot: { maxDailyCost: '1.00' }, pricingVersion: 'price-v1', budgetWindows: [{ key: 'guild:daily', startsAt: at(-3600).toISOString(), endsAt: at(3600).toISOString() }], reconcileAfter: at(60), purgeAfter: at(600) });
 }
 
+/** Build unresolved usage evidence so the test can exercise later reconciliation. */
 function estimatedUsage(): UsageEntry {
   return new UsageEntry({ ...scope, id: id(12), reservationId: id(10), operationKind: 'task-attempt', operationKey: 'task:2:attempt:1', attemptId: id(5), provider: 'test', pricingVersion: 'price-v1', currency: 'USD', accountingState: 'estimated', estimatedCost: '0.100000000000000001', evidence: evidence('timeout', 1), reconcileAfter: at(60), purgeAfter: at(600) });
 }

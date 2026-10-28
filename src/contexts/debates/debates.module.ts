@@ -1,35 +1,13 @@
 /**
- * Planned component: DebatesModule
- * Kind: NestJS composition module
- * Owner: Debates
- * Status: Design scaffold only; not implemented.
+ * Debates composition reference. apps/bot/bot.module.ts wires DebateService and
+ * DebatePublicationService directly; the worker owns DebateTaskHandlers and JevService.
+ * There is no Nest dependency-injection module or exported repository.
  *
- * Responsibility:
- * Register DebateService and DebateScoringPolicy with private DebateSession, ParticipantConsent,
- * TranscriptEntry, TranscriptSnapshot, RubricRevision and DebateEvaluation persistence.
+ * DebateService owns the six scoped records, explicit participant consent, submitted text,
+ * immutable transcript/rubric binding, paired typed scoring, acceptance and cleanup.
+ * DebatePublicationService performs current authorization checks around one committed send
+ * and reconciles unknown outcomes. Scores never grant permissions or trigger moderation.
  *
- * Planned exports:
- * DebateService only. DTO catalogues and plain contracts describe its boundary without
- * registering runtime providers.
- *
- * Private registrations:
- * DebateScoringPolicy and all six records with their native MikroORM repositories. Keep queries
- * and persistence inside DebateService; do not export records, repositories, EntityManager or
- * the scoring implementation.
- *
- * Scope:
- * Staged feature: activate when consented debate mode ships. The dedicated slash-command family
- * and evaluation workflow remain scope-dependent.
- *
- * Planned methods:
- * No business methods planned. This file will describe dependency registration, private entity
- * registration and the narrow exported public services.
- *
- * Collaborators/Boundaries:
- * Consume Administration, Jobs, Usage, Artifacts and narrow Discord contracts. Attributable
- * conduct may go to Moderation public intake; debate scores never flow into discipline.
- *
- * Invariants:
- * Composition must not contain business decisions or conceal dependency cycles with forward
- * references.
+ * The public interaction surface is the Debate service and its plain DTOs. Database entities,
+ * scoring arithmetic, task claims and native Discord transport remain owner-private details.
  */

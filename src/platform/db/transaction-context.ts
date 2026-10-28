@@ -2,7 +2,10 @@
  * Planned component: Transaction and ORM-context plan
  * Kind: Local persistence boundary design
  * Owner: Platform / Database
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Owners already use orm.em.fork().transactional and join supplied EntityManagers. This note does not require another transaction wrapper.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Define how entry points isolate ORM state and owner services share local atomic work.

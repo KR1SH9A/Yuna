@@ -1,15 +1,26 @@
+/** Own Discord I/O and recover owner callback failures only after durable availability fencing. */
 import {
   Client, Events, GatewayIntentBits, MessageFlags, MessageType, Partials, PermissionFlagsBits,
-  Routes, type Message, type PartialMessage, type APIMessage,
+  Routes, ApplicationCommandOptionType, ApplicationCommandType,
+  type Message, type PartialMessage, type APIMessage, type Interaction,
+  type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from 'discord.js';
-import { assertDiscordId } from '../platform/db/entity-values.js';
+import { assertDiscordId, invariant } from '../platform/db/entity-values.js';
 import type { RuntimeResource } from '../platform/runtime/application.js';
 import type {
   DiscordReplyLookup, DiscordReplyRequest, DiscordSendResult, DiscordSourceState,
   MessageReference, NormalizedConversationMessage,
+  DiscordAuthorityCaller, DiscordAuthorityOperation, DiscordNativeAuthorityFacts, NormalizedAdministrationCommand,
+  DiscordOriginalMessageCapture, DiscordOriginalMessageProvenance, DiscordCommandResponse,
 } from './contracts.js';
+import { discordGrantCapabilities } from './contracts.js';
+import { DiscordModerationTransport } from './moderation-transport.js';
+import { knowledgeCommandDefinition } from './knowledge-commands.js';
+import { memoryCommandDefinition } from './memory-commands.js';
+import { debateCommandDefinition } from './debate-commands.js';
+import { DiscordDebateTransport } from './debate-transport.js';
 import {
-  hashDiscordContent, hashMessageSource, normalizeConversationMessage, type ConversationSourceSnapshot,
+  hashDiscordContent, hashMessageSource, normalizeConversationMessage, normalizeAdministrationCommand, normalizeOriginalMessage, type ConversationSourceSnapshot,
 } from './input-normalizer.js';
 
 export interface DiscordGatewayOptions {
@@ -19,29 +30,132 @@ export interface DiscordGatewayOptions {
   readonly onInvalidation: (reference: MessageReference) => void | Promise<void>;
   readonly onAvailable?: () => void | Promise<void>;
   readonly onUnavailable?: () => void | Promise<void>;
+  readonly onCommand?: (command: NormalizedAdministrationCommand) => DiscordCommandResponse | Promise<DiscordCommandResponse>;
+  readonly onOriginalMessage?: (provenance: DiscordOriginalMessageProvenance, capture: DiscordOriginalMessageCapture) => void | Promise<void>;
 }
+
+/** Static registration payload for the explicit operator setup command; importing it performs no Discord writes. */
+export const administrationCommandDefinition: Omit<RESTPostAPIChatInputApplicationCommandsJSONBody, 'contexts' | 'dm_permission' | 'integration_types'> = {
+  name: 'yuna', description: 'Manage this server’s Yuna installation', type: ApplicationCommandType.ChatInput,
+  // Self-service/report commands are visible to members; each privileged owner still checks current native and application authority.
+  default_member_permissions: null,
+  options: [
+    knowledgeCommandDefinition,
+    memoryCommandDefinition,
+    debateCommandDefinition,
+    { name: 'usage', description: 'View your own usage and remaining limit', type: ApplicationCommandOptionType.Subcommand },
+    { name: 'limit-clear', description: 'Clear your own additional personal limit', type: ApplicationCommandOptionType.Subcommand },
+    { name: 'limit', description: 'Set a stricter personal daily limit', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'attempts', description: 'Daily attempts, including zero to stop your usage', type: ApplicationCommandOptionType.Integer, min_value: 0, max_value: 1000000 },
+        { name: 'amount', description: 'Decimal budget amount; requires currency', type: ApplicationCommandOptionType.String, max_length: 40 },
+        { name: 'currency', description: 'Three uppercase currency letters; requires amount', type: ApplicationCommandOptionType.String, min_length: 3, max_length: 3 },
+      ] },
+    { name: 'action', description: 'Inspect a moderation action’s observed outcome', type: ApplicationCommandOptionType.Subcommand,
+      options: [{ name: 'action-id', description: 'Action identifier returned by Yuna', type: ApplicationCommandOptionType.String, required: true, min_length: 36, max_length: 36 }] },
+    { name: 'ban', description: 'Request an exact staff ban with an application grant', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'target', description: 'Exact Discord account ID; current membership is not required', type: ApplicationCommandOptionType.String, required: true, max_length: 20 },
+        { name: 'reason', description: 'Reason retained with this staff request', type: ApplicationCommandOptionType.String, required: true, max_length: 350 },
+        { name: 'delete-seconds', description: 'Explicit message-history deletion window; defaults to zero', type: ApplicationCommandOptionType.Integer, min_value: 0, max_value: 604800 },
+      ] },
+    { name: 'unban', description: 'Request an exact unban as a current Discord administrator', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'target', description: 'Exact Discord account ID', type: ApplicationCommandOptionType.String, required: true, max_length: 20 },
+        { name: 'reason', description: 'Reason retained with this staff request', type: ApplicationCommandOptionType.String, required: true, max_length: 350 },
+      ] },
+    { name: 'report', description: 'Report a message for review against retained original evidence', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'channel', description: 'Channel containing the message', type: ApplicationCommandOptionType.Channel, required: true },
+        { name: 'message-id', description: 'Exact Discord message ID', type: ApplicationCommandOptionType.String, required: true, max_length: 20 },
+        { name: 'allegation', description: 'Your report; this does not establish a violation', type: ApplicationCommandOptionType.String, required: true, max_length: 1000 },
+      ] },
+    { name: 'status', description: 'Inspect Yuna status and current revisions', type: ApplicationCommandOptionType.Subcommand },
+    { name: 'bootstrap', description: 'Enroll the current server owner', type: ApplicationCommandOptionType.Subcommand },
+    { name: 'configure', description: 'Apply the operator’s local configuration file', type: ApplicationCommandOptionType.Subcommand },
+    { name: 'remove', description: 'Begin removing this Yuna installation and its retained data', type: ApplicationCommandOptionType.Subcommand,
+      options: [{ name: 'installation-revision', description: 'Installation revision shown by status', type: ApplicationCommandOptionType.Integer, required: true, min_value: 1, max_value: 2_147_483_647 }] },
+    { name: 'grant', description: 'Grant an application capability to a user', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'user', description: 'User receiving the capability', type: ApplicationCommandOptionType.User, required: true },
+        { name: 'capability', description: 'Application capability; native Discord permissions still apply', type: ApplicationCommandOptionType.String, required: true,
+          choices: discordGrantCapabilities.map(value => ({ name: value, value })) },
+        { name: 'channel', description: 'Optionally restrict the capability to one channel', type: ApplicationCommandOptionType.Channel },
+        { name: 'target', description: 'Optionally restrict the capability to one target member', type: ApplicationCommandOptionType.User },
+        { name: 'expires', description: 'Optional UTC expiry such as 2026-12-01T00:00:00Z', type: ApplicationCommandOptionType.String, max_length: 128 },
+      ] },
+    { name: 'revoke', description: 'Revoke an application grant at its current revisions', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'grant-id', description: 'Internal grant identifier shown by status', type: ApplicationCommandOptionType.String, required: true, max_length: 36 },
+        { name: 'authority-revision', description: 'Current grant authority revision', type: ApplicationCommandOptionType.Integer, required: true, min_value: 0, max_value: 2_147_483_647 },
+        { name: 'row-revision', description: 'Current grant row revision', type: ApplicationCommandOptionType.Integer, required: true, min_value: 1, max_value: 2_147_483_647 },
+        { name: 'reason', description: 'Short reason code using letters, digits, colon, underscore or hyphen', type: ApplicationCommandOptionType.String, required: true, max_length: 128 },
+      ] },
+    { name: 'pause', description: 'Pause Yuna at the safety revision shown by status', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'safety-revision', description: 'Current safety revision', type: ApplicationCommandOptionType.Integer, required: true, min_value: 0, max_value: 2_147_483_647 },
+        { name: 'reason', description: 'Short reason code using letters, digits, colon, underscore or hyphen', type: ApplicationCommandOptionType.String, required: true, max_length: 128 },
+      ] },
+    { name: 'resume', description: 'Resume Yuna at the safety revision shown by status', type: ApplicationCommandOptionType.Subcommand,
+      options: [{ name: 'safety-revision', description: 'Current safety revision', type: ApplicationCommandOptionType.Integer, required: true, min_value: 0, max_value: 2_147_483_647 }] },
+    { name: 'channel-status', description: 'Inspect channel reply mode and its current revision', type: ApplicationCommandOptionType.Subcommand,
+      options: [{ name: 'channel', description: 'Channel to inspect; defaults to this channel', type: ApplicationCommandOptionType.Channel }] },
+    { name: 'channel', description: 'Choose direct replies or silence in a channel', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'channel', description: 'Channel to configure', type: ApplicationCommandOptionType.Channel, required: true },
+        { name: 'mode', description: 'Whether explicit mentions and replies receive answers', type: ApplicationCommandOptionType.String, required: true,
+          choices: [{ name: 'direct', value: 'direct' }, { name: 'silent', value: 'silent' }] },
+        { name: 'row-revision', description: 'Current settings revision, or zero to create settings', type: ApplicationCommandOptionType.Integer, required: true, min_value: 0, max_value: 2_147_483_647 },
+      ] },
+  ],
+};
 
 /** The optional factory keeps unit tests offline; SDK types remain inside this integration. */
 export interface DiscordGatewayDependencies { readonly createClient: () => Client }
 
 const unavailableSource: DiscordSourceState = Object.freeze({ exists: false, sourceHash: null, canSend: false });
 const callbackDrainMs = 5_000;
+const callbackRecoveryMs = 1_000;
+const authorityReadMs = 5_000;
 
+interface NativeRole { readonly id: string; readonly position: number; readonly permissions: string }
+interface NativeMember { readonly permissions: string; readonly highest: NativeRole; readonly pending: boolean }
+
+/** Reduce a fresh member/role response to guild permission bits and the highest comparable role. */
+function nativeMember(value: unknown, userId: string, guildId: string, roles: ReadonlyMap<string, NativeRole>): NativeMember {
+  invariant(value !== null && typeof value === 'object', 'Missing Discord member');
+  const member = value as { user?: { id?: unknown }; roles?: unknown; pending?: unknown };
+  invariant(member.user?.id === userId && Array.isArray(member.roles) && member.roles.length <= 1_000, 'Invalid Discord member');
+  invariant(member.pending === undefined || typeof member.pending === 'boolean', 'Invalid member screening state');
+  let highest = roles.get(guildId)!;
+  let permissions = BigInt(highest.permissions);
+  for (const id of member.roles) {
+    invariant(typeof id === 'string' && roles.has(id), 'Unknown Discord role');
+    const role = roles.get(id)!;
+    permissions |= BigInt(role.permissions);
+    if (role.position > highest.position || (role.position === highest.position && BigInt(role.id) < BigInt(highest.id))) highest = role;
+  }
+  return { permissions: permissions.toString(), highest, pending: member.pending === true };
+}
+
+/** Configure a bounded text-only connection with no automatic message-send retries. */
 function createClient(): Client {
   return new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
     partials: [Partials.Message],
     allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
-    rest: { retries: 0, timeout: 10_000, rejectOnRateLimit: ['/channels'] },
+    rest: { retries: 0, timeout: 10_000, rejectOnRateLimit: ['/channels', '/guilds', '/users'] },
   });
 }
 
+/** Extract only a public status code; provider errors can contain credentials or message bodies. */
 function safeHttpStatus(error: unknown): number | undefined {
   if (typeof error !== 'object' || error === null || !('status' in error)) return undefined;
   const status = error.status;
   return typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
 }
 
+/** Convert a fresh REST message to the same source snapshot used by Gateway intake. */
 function fromRest(message: APIMessage, guildId: string): ConversationSourceSnapshot {
   const reference = message.message_reference;
   return {
@@ -69,23 +183,43 @@ export class DiscordGateway implements RuntimeResource {
   #client?: Client;
   #botUserId?: string;
   #available = false;
+  // A healthy socket can survive a failed database callback. An actual outage still needs
+  // an explicit Discord resume/ready event, even when cached SDK readiness has not changed yet.
+  #transportAvailable = false;
+  #unavailabilityPending = false;
   #availableCallbackStarted = false;
   #availabilityEpoch = 0;
   #availabilityWork: Promise<void> = Promise.resolve();
+  #recoveryTimer?: ReturnType<typeof setTimeout>;
   #started = false;
   #stopping?: Promise<void>;
 
+  /** Capture validated scope and injectable SDK creation without opening a connection. */
   constructor(options: DiscordGatewayOptions, dependencies: DiscordGatewayDependencies = { createClient }) {
     assertDiscordId(options.guildId);
     this.#options = Object.freeze({ ...options });
     this.#createClient = dependencies.createClient;
   }
 
+  /** Expose identity only after Discord authenticated the bot. */
   get botUserId(): string {
     if (!this.#botUserId) throw new Error('Discord identity unavailable');
     return this.#botUserId;
   }
 
+  /** Share authenticated transport state with the effect adapter without exposing the SDK client to feature owners. */
+  createModerationTransport(): DiscordModerationTransport {
+    return new DiscordModerationTransport(() => this.#client, () => this.#botUserId,
+      () => this.#available && !this.#stopping, this.#abort.signal);
+  }
+
+  /** Give Debate publication the same configured guild and no-retry REST lifecycle as other Discord effects. */
+  createDebateTransport(): DiscordDebateTransport {
+    return new DiscordDebateTransport(this.#options.guildId, () => this.#client, () => this.#botUserId,
+      () => this.#available && !this.#stopping, this.#abort.signal);
+  }
+
+  /** Attach lifecycle handlers before login, and wait for both Discord and owner readiness. */
   async start(signal: AbortSignal): Promise<void> {
     if (this.#started || this.#stopping) throw new Error('Discord already started or stopped');
     this.#started = true;
@@ -95,6 +229,7 @@ export class DiscordGateway implements RuntimeResource {
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    /** Reject pending startup immediately when application cancellation arrives. */
     const onAbort = () => rejectReady(new Error('Discord startup cancelled'));
     signal.addEventListener('abort', onAbort, { once: true });
     client.on(Events.ClientReady, () => {
@@ -107,7 +242,12 @@ export class DiscordGateway implements RuntimeResource {
         else rejectReady(new Error('Discord startup cancelled'));
       }, () => rejectReady(new Error('Discord availability update failed')));
     });
+    // Raw dispatch precedes discord.js cache mutation and its conversation MessageCreate event.
+    client.on(Events.Raw, (packet: { t?: string; d?: unknown; s?: number }, shardId: number) => {
+      if (packet.t === 'MESSAGE_CREATE') this.#receiveOriginal(packet.d, shardId, packet.s);
+    });
     client.on(Events.MessageCreate, message => this.#receive(message));
+    client.on(Events.InteractionCreate, interaction => this.#receiveInteraction(interaction));
     client.on(Events.MessageUpdate, (_old, message) => this.#invalidate(message));
     client.on(Events.MessageDelete, message => this.#invalidate(message));
     client.on(Events.MessageBulkDelete, messages => { for (const message of messages.values()) this.#invalidate(message); });
@@ -118,6 +258,7 @@ export class DiscordGateway implements RuntimeResource {
     client.on(Events.ShardError, () => this.#unavailable());
     client.on(Events.GuildUnavailable, guild => { if (guild.id === this.#options.guildId) this.#unavailable(); });
     client.on(Events.GuildDelete, guild => { if (guild.id === this.#options.guildId) this.#unavailable(); });
+    /** Recover persisted availability after reconnect before allowing new Discord work. */
     const restore = () => { void this.#restoreAvailability(client).catch(() => {}); };
     client.on(Events.ShardResume, restore);
     client.on(Events.GuildAvailable, guild => { if (guild.id === this.#options.guildId) restore(); });
@@ -129,9 +270,13 @@ export class DiscordGateway implements RuntimeResource {
     finally { signal.removeEventListener('abort', onAbort); }
   }
 
+  /** Close admission immediately, cancel delayed recovery, and drain callbacks before returning. */
   stop(): Promise<void> {
     if (this.#stopping) return this.#stopping;
     this.#available = false;
+    this.#transportAvailable = false;
+    clearTimeout(this.#recoveryTimer);
+    this.#recoveryTimer = undefined;
     this.#abort.abort();
     for (const tokens of this.#normalizing.values()) for (const token of tokens) token.invalidated = true;
     this.#stopping = Promise.resolve().then(async () => {
@@ -152,6 +297,7 @@ export class DiscordGateway implements RuntimeResource {
     return this.#stopping;
   }
 
+  /** Read current content and local permission facts; missing or uncertain access fails closed. */
   async readSource(reference: MessageReference, signal: AbortSignal): Promise<DiscordSourceState> {
     const client = this.#client;
     if (!client || !this.#allowed(reference) || signal.aborted || this.#abort.signal.aborted) return unavailableSource;
@@ -174,7 +320,9 @@ export class DiscordGateway implements RuntimeResource {
     } catch { return unavailableSource; }
   }
 
+  /** Recheck the source, send once, and preserve uncertainty once the external POST begins. */
   async sendReply(request: DiscordReplyRequest, signal: AbortSignal): Promise<DiscordSendResult> {
+    /** Represent a pre-dispatch rejection as definitive because no Discord request was sent. */
     const failure = (code: string): DiscordSendResult => ({ classification: 'definitive_failure', code });
     if (!this.#allowed(request)) return failure('discord_unavailable');
     if (typeof request.content !== 'string' || !request.content.trim() || request.content.length > 2_000
@@ -215,6 +363,7 @@ export class DiscordGateway implements RuntimeResource {
     } finally { clearTimeout(timer); }
   }
 
+  /** Return only exact attributable evidence; absent recent history cannot prove no send. */
   async findReply(request: DiscordReplyLookup, signal: AbortSignal): Promise<string | null> {
     if (!this.#allowed(request) || signal.aborted) return null;
     const channel = this.#client?.channels.cache.get(request.channelId);
@@ -236,6 +385,118 @@ export class DiscordGateway implements RuntimeResource {
     } catch { return null; }
   }
 
+  /** Read native authority directly from REST, outside transactions; missing or changed facts never grant permission. */
+  async readFacts<Operation extends DiscordAuthorityOperation>(caller: DiscordAuthorityCaller, operation: Operation): Promise<DiscordNativeAuthorityFacts<Operation>> {
+    const actorId = caller.actorId, guildId = caller.guildId, sourceRequestId = caller.sourceRequestId;
+    const selected = Object.freeze({ capability: operation.capability,
+      ...(operation.channelId === undefined ? {} : { channelId: operation.channelId }),
+      ...(operation.targetUserId === undefined ? {} : { targetUserId: operation.targetUserId }) });
+    // Measure freshness from the first read, not the end of a potentially slow multi-request observation.
+    const observedAt = new Date();
+    const unavailable: DiscordNativeAuthorityFacts<Operation> = Object.freeze({
+      actorId, guildId, sourceRequestId, operation: selected, observedAt, complete: false,
+      ownerId: '', actorIsMember: false, actorPermissions: '0', botPermissions: '0',
+    });
+    const epoch = this.#availabilityEpoch;
+    const reads = new AbortController();
+    const signal = AbortSignal.any([this.#abort.signal, reads.signal, AbortSignal.timeout(authorityReadMs)]);
+    try {
+      for (const id of [actorId, guildId, sourceRequestId, ...(selected.channelId === undefined ? [] : [selected.channelId]), ...(selected.targetUserId === undefined ? [] : [selected.targetUserId])]) assertDiscordId(id);
+      if (!this.#client || !this.#botUserId || !this.#available || this.#stopping || guildId !== this.#options.guildId
+        || !['administration.manage', ...discordGrantCapabilities].includes(selected.capability)) return unavailable;
+      const client = this.#client, botId = this.#botUserId;
+      // Only an explicit Unknown Member response proves absence; forbidden/timeouts remain incomplete.
+      /** Fetch current membership and treat only Discord’s exact Unknown Member response as absence. */
+      const member = async (userId: string): Promise<unknown | null> => {
+        try { return await client.rest.get(Routes.guildMember(guildId, userId), { signal }); }
+        catch (error) {
+          if (safeHttpStatus(error) === 404 && typeof error === 'object' && error !== null && 'code' in error && error.code === 10007) return null;
+          throw error;
+        }
+      };
+      const [rawGuild, rawRoles, rawActor, rawBot, rawTarget, rawChannel] = await Promise.all([
+        client.rest.get(Routes.guild(guildId), { signal }), client.rest.get(Routes.guildRoles(guildId), { signal }),
+        member(actorId), member(botId), selected.targetUserId ? member(selected.targetUserId) : null,
+        selected.channelId ? client.rest.get(Routes.channel(selected.channelId), { signal }) : null,
+      ]);
+      if (signal.aborted || !this.#available || this.#stopping || epoch !== this.#availabilityEpoch) return unavailable;
+      invariant(rawGuild !== null && typeof rawGuild === 'object', 'Missing guild facts');
+      const guild = rawGuild as { id?: unknown; owner_id?: unknown };
+      invariant(guild.id === guildId, 'Wrong guild facts');
+      assertDiscordId(guild.owner_id as string);
+      if (selected.channelId) {
+        invariant(rawChannel !== null && typeof rawChannel === 'object', 'Missing channel facts');
+        const channel = rawChannel as { id?: unknown; guild_id?: unknown };
+        invariant(channel.id === selected.channelId && channel.guild_id === guildId, 'Channel outside guild');
+      }
+      invariant(Array.isArray(rawRoles) && rawRoles.length > 0 && rawRoles.length <= 1_000, 'Missing guild roles');
+      const roles = new Map<string, NativeRole>();
+      for (const value of rawRoles) {
+        invariant(value !== null && typeof value === 'object', 'Invalid guild role');
+        const role = value as NativeRole;
+        assertDiscordId(role.id);
+        invariant(!roles.has(role.id) && Number.isSafeInteger(role.position) && role.position >= 0
+          && typeof role.permissions === 'string' && /^[0-9]{1,40}$/.test(role.permissions), 'Invalid guild role');
+        roles.set(role.id, { id: role.id, position: role.position, permissions: role.permissions });
+      }
+      invariant(roles.has(guildId), 'Missing everyone role');
+      const actor = rawActor === null ? null : nativeMember(rawActor, actorId, guildId, roles);
+      const bot = nativeMember(rawBot, botId, guildId, roles);
+      invariant(!bot.pending, 'Bot membership incomplete');
+      const target = rawTarget === null || selected.targetUserId === undefined ? null : nativeMember(rawTarget, selected.targetUserId, guildId, roles);
+      // Equal positions follow Discord's snowflake ordering; equal highest roles never outrank one another.
+      /** Compare current highest roles using Discord’s position and snowflake ordering rules. */
+      const aboveTarget = (subject: NativeMember | null) => Boolean(subject && target &&
+        (subject.highest.position > target.highest.position || (subject.highest.position === target.highest.position && BigInt(subject.highest.id) < BigInt(target.highest.id))));
+      return Object.freeze({ actorId, guildId, sourceRequestId, operation: selected, observedAt, complete: true,
+        ownerId: guild.owner_id as string, actorIsMember: actor !== null && !actor.pending,
+        actorPermissions: actor?.permissions ?? '0', botPermissions: bot.permissions,
+        ...(selected.targetUserId ? { target: Object.freeze({ userId: selected.targetUserId, isMember: target !== null,
+          isGuildOwner: selected.targetUserId === guild.owner_id, isSelf: selected.targetUserId === botId,
+          actorAboveTarget: aboveTarget(actor), botAboveTarget: aboveTarget(bot) }) } : {}),
+      });
+    } catch { return unavailable; }
+    finally { reads.abort(); }
+  }
+
+  /** Acknowledge only authenticated in-guild /yuna commands; keep interaction tokens inside the SDK adapter. */
+  #receiveInteraction(interaction: Interaction): void {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'yuna'
+      || interaction.guildId !== this.#options.guildId || interaction.applicationId !== this.#client?.application?.id
+      || interaction.user.bot || interaction.deferred || interaction.replied || this.#stopping) return;
+    const command = normalizeAdministrationCommand({ actorId: interaction.user.id, actorIsBot: interaction.user.bot,
+      guildId: interaction.guildId, channelId: interaction.channelId ?? '', sourceRequestId: interaction.id,
+      commandName: interaction.commandName, options: interaction.options.data });
+    const epoch = this.#availabilityEpoch;
+    this.#track((async () => {
+      // Defer before database/native-authority work so the acknowledgement meets Discord's deadline.
+      try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); }
+      catch { return; } // A failed/duplicate acknowledgement never authorizes the command callback.
+      let content = 'Yuna is temporarily unavailable. Try again after checking its status.';
+      let attachment: { filename: string; content: string } | undefined;
+      if (!command) content = 'Invalid Yuna command arguments. Use the registered command options.';
+      else if (this.#available && epoch === this.#availabilityEpoch && !this.#stopping && this.#options.onCommand) {
+        try {
+          const response = await this.#options.onCommand(command);
+          const text = typeof response === 'string' ? response : response.content;
+          const file = typeof response === 'string' ? undefined : response.attachment;
+          const validFile = file === undefined || (typeof file.filename === 'string' && /^[a-z][a-z0-9-]{0,63}\.json$/.test(file.filename)
+            && typeof file.content === 'string' && Buffer.byteLength(file.content, 'utf8') <= 64 * 1024);
+          if (typeof text === 'string' && text.trim().length > 0 && text.length <= 2_000 && validFile) { content = text; attachment = file; }
+          else content = 'The command completed without a displayable response. Check Yuna status.';
+        } catch {
+          // A command may already have committed. Never replay it or expose exceptions in Discord.
+          content = 'The command outcome could not be confirmed. Check Yuna status before trying again.';
+        }
+      }
+      if (this.#stopping) return;
+      try { await interaction.editReply({ content, allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
+        ...(attachment ? { files: [{ attachment: Buffer.from(attachment.content, 'utf8'), name: attachment.filename }] } : {}) }); }
+      catch { /* Lost private response does not retry the operation or close conversation intake. */ }
+    })());
+  }
+
+  /** Restrict every read/effect to the configured guild while all readiness gates are open. */
   #allowed(reference: MessageReference): boolean {
     if (!this.#available || this.#stopping || reference.guildId !== this.#options.guildId) return false;
     try { for (const id of [reference.guildId, reference.channelId, reference.messageId]) assertDiscordId(id); }
@@ -243,46 +504,76 @@ export class DiscordGateway implements RuntimeResource {
     return true;
   }
 
+  /** Drain owner work on stop, and treat callback rejection as an observation gap, not a socket loss. */
   #track(work: Promise<void>): void {
-    const safe = work.catch(() => { this.#unavailable(); });
+    const safe = work.catch(() => { this.#unavailable(false); });
     this.#callbacks.add(safe);
     void safe.finally(() => this.#callbacks.delete(safe));
   }
 
+  /** Serialize the durable fence; retain its obligation until a write for this epoch succeeds. */
   #notifyUnavailable(): void {
+    const epoch = this.#availabilityEpoch;
+    this.#unavailabilityPending = true;
     this.#availableCallbackStarted = false;
-    const callback = this.#availabilityWork.catch(() => {}).then(() => this.#options.onUnavailable?.());
+    const callback = this.#availabilityWork.catch(() => {}).then(async () => {
+      await this.#options.onUnavailable?.();
+      if (epoch === this.#availabilityEpoch) this.#unavailabilityPending = false;
+    });
     this.#availabilityWork = callback;
     this.#track(callback);
   }
 
-  #unavailable(): void {
+  /** Fence new work synchronously; transport loss can be cleared only by a Discord readiness event. */
+  #unavailable(transportLost = true): void {
     const wasAvailable = this.#available || this.#availableCallbackStarted;
     this.#available = false;
+    if (transportLost) this.#transportAvailable = false;
     this.#availabilityEpoch += 1;
     for (const tokens of this.#normalizing.values()) for (const token of tokens) token.invalidated = true;
     if (wasAvailable && !this.#stopping) this.#notifyUnavailable();
+    this.#scheduleRecovery();
   }
 
-  #restoreAvailability(client: Client): Promise<void> {
+  /** Keep one delayed retry, with no tight loop or callback overlap while storage is unavailable. */
+  #scheduleRecovery(): void {
+    if (this.#stopping || this.#abort.signal.aborted || this.#recoveryTimer
+      || (!this.#unavailabilityPending && !this.#transportAvailable)) return;
+    this.#recoveryTimer = setTimeout(() => {
+      this.#recoveryTimer = undefined;
+      if (this.#client && !this.#stopping) void this.#restoreAvailability(this.#client, false).catch(() => {});
+    }, callbackRecoveryMs);
+  }
+
+  /** Retry failed fences before resume; a stale callback can never reopen a newer outage or shutdown. */
+  #restoreAvailability(client: Client, transportRestored = true): Promise<void> {
+    if (transportRestored) this.#transportAvailable = true;
+    clearTimeout(this.#recoveryTimer);
+    this.#recoveryTimer = undefined;
     const epoch = this.#availabilityEpoch;
     this.#available = false;
     // Serialize both transitions: an older available write cannot overtake a newer unavailable write.
-    const work = this.#availabilityWork.then(async () => {
-      if (epoch !== this.#availabilityEpoch || this.#stopping || !client.isReady()
+    const work = this.#availabilityWork.catch(() => {}).then(async () => {
+      if (epoch !== this.#availabilityEpoch || this.#stopping) return;
+      if (this.#unavailabilityPending) {
+        await this.#options.onUnavailable?.();
+        if (epoch !== this.#availabilityEpoch || this.#stopping) return;
+        this.#unavailabilityPending = false;
+      }
+      if (!this.#transportAvailable || !client.isReady()
         || !client.guilds.cache.get(this.#options.guildId)?.available) return;
       // The owner may commit availability before this callback settles; a disconnect must follow it with an unavailable write.
       this.#availableCallbackStarted = true;
       await this.#options.onAvailable?.();
-      if (epoch === this.#availabilityEpoch && !this.#stopping && client.isReady()
+      if (epoch === this.#availabilityEpoch && !this.#stopping && this.#transportAvailable && client.isReady()
         && client.guilds.cache.get(this.#options.guildId)?.available) this.#available = true;
     });
     this.#availabilityWork = work;
     this.#track(work);
-    void work.catch(() => { if (this.#availableCallbackStarted) this.#notifyUnavailable(); });
     return work;
   }
 
+  /** Invalidate identity immediately, including messages whose reply verification is still awaiting REST. */
   #invalidate(message: Pick<Message | PartialMessage, 'guildId' | 'channelId' | 'id'>): void {
     if (this.#stopping || message.guildId !== this.#options.guildId) return;
     try { for (const id of [message.guildId, message.channelId, message.id]) assertDiscordId(id); }
@@ -292,6 +583,20 @@ export class DiscordGateway implements RuntimeResource {
     this.#track(Promise.resolve().then(() => this.#options.onInvalidation(reference)));
   }
 
+  /** Snapshot every in-scope create independently; owner storage deduplicates IDs and callback failures never suppress Community. */
+  #receiveOriginal(payload: unknown, shardId: number, gatewaySequence?: number): void {
+    if (!this.#available || this.#stopping || !this.#botUserId || !this.#options.onOriginalMessage) return;
+    const original = normalizeOriginalMessage(payload, { botUserId: this.#botUserId,
+      hasMessageContent: this.#client?.options.intents.has(GatewayIntentBits.MessageContent) === true,
+      observedAt: new Date(), shardId, ...(gatewaySequence === undefined ? {} : { gatewaySequence }) });
+    if (!original || !this.#allowed(original.provenance)) return;
+    this.#track((async () => {
+      try { await this.#options.onOriginalMessage!(original.provenance, original.capture); }
+      catch { /* Composition owns safe operational reporting; uncertain intake is never replayed here. */ }
+    })());
+  }
+
+  /** Normalize eligible messages, verifying reply authors before handing bounded text to Community. */
   #receive(message: Message): void {
     if (!this.#available || this.#stopping || message.guildId !== this.#options.guildId
       || message.author.bot || message.webhookId || message.system) return;

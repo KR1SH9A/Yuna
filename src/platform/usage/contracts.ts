@@ -2,7 +2,10 @@
  * Planned component: Usage contracts
  * Kind: Plain reservation and accounting boundary types
  * Owner: Platform / Usage
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Executable exact-money and usage snapshots live in the usage entities and user-usage.service.ts. This generic catalog is not a second runtime API.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Describe trusted admission limits, reserved cost and attempt-specific accounting.

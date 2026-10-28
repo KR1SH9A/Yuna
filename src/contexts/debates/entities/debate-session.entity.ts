@@ -1,3 +1,4 @@
+/** Debate session phases bind explicit consent, frozen transcript and accepted evaluation identities. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -11,6 +12,8 @@ export interface DebateConsentScope {
   retentionSeconds: number;
   includeEdits: boolean;
   includeDeletedContent: boolean;
+  submissionMode?: 'explicit_text';
+  assessmentModel?: string;
 }
 export interface DebateSessionInput extends ScopedEntityInput {
   sourceRequestId: string;
@@ -55,6 +58,7 @@ export class DebateSession extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Validate and copy immutable identity, source bindings and retention before creating this record. */
   constructor(input: DebateSessionInput) {
     super(input);
     assertDiscordId(input.channelId);
@@ -91,6 +95,7 @@ export class DebateSession extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Fix the selected transcript identity and stop accepting further submissions. */
   freeze(transcriptId: string, at: Date): void {
     invariant(this.state === 'active', 'Only an active session can freeze');
     assertUuid(transcriptId);
@@ -101,6 +106,7 @@ export class DebateSession extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Bind the exact required speaker-order tasks before any result can be accepted. */
   expectEvaluationTasks(tasks: Partial<Record<EvaluationVariant, string>>, at: Date): void {
     invariant(this.state === 'frozen', 'Freeze the transcript before registering evaluation');
     invariant(!!tasks.original && Object.values(tasks).length === new Set(Object.values(tasks)).size, 'Evaluation requires distinct expected tasks');
@@ -111,6 +117,7 @@ export class DebateSession extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Accept one evaluation only when every frozen identity and required task still matches. */
   acceptEvaluation(input: { evaluationId: string; transcriptId: string; rubricRevisionId: string; completedTaskIds: readonly string[]; at: Date }): void {
     invariant(this.state === 'evaluating', 'Session does not expect an evaluation');
     assertUuid(input.evaluationId);
@@ -122,6 +129,7 @@ export class DebateSession extends ScopedEntity {
     this.touch(input.at);
   }
 
+  /** Invalidate further processing once while retaining the cancellation generation as a durable fence. */
   cancel(at: Date): void {
     if (this.state === 'canceled') return;
     assertDate(at, 'at');
@@ -132,6 +140,7 @@ export class DebateSession extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Erase retained content without removing the minimal identities needed for consent or delivery reconciliation. */
   purgePayload(reasonCode: string, at: Date): void {
     invariant(this.state === 'canceled' || this.state === 'evaluated', 'Invalidate pending evaluation before purging');
     assertDate(at, 'at');
@@ -144,11 +153,13 @@ export class DebateSession extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Reject invalid update times, erased content where relevant, and exhausted row revisions. */
   private assertMutable(at: Date): void {
     assertDate(at, 'at');
     invariant(!this.payloadPurgedAt && at < this.purgeAfter, 'Session payload is unavailable');
     invariant(this.rowRevision < 2_147_483_647, 'Revision exhausted');
   }
 
+  /** Advance the optimistic row revision and record the local mutation time. */
   private touch(at: Date): void { this.rowRevision += 1; this.updatedAt = new Date(at); }
 }

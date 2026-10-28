@@ -2,7 +2,10 @@
  * Planned component: NormalizedDiscordMessageDto
  * Kind: Normalized event DTO
  * Owner: Discord boundary
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Current normalization is implemented by input-normalizer.ts and contracts.ts. This wider DTO catalog is an extension reference.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Carry a bounded message snapshot from DiscordInputNormalizer to bot intake without SDK objects.

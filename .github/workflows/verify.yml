@@ -1,0 +1,25 @@
+# Build and exercise Yuna against private PostgreSQL clusters, without external credentials.
+name: Verify
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Locate PostgreSQL server tools
+        run: pg_config --bindir >> "$GITHUB_PATH"
+      - run: npm ci
+      - run: npm run check:docs
+      - run: npm run test:coverage
+      - run: git diff --check

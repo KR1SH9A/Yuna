@@ -1,3 +1,4 @@
+/** Test local lifecycle guards for administration, consent and staged governance records without database I/O. */
 import assert from 'node:assert/strict';
 import { test } from '@jest/globals';
 import { GuildInstallation } from '../../src/contexts/administration/entities/guild-installation.entity.js';
@@ -64,6 +65,7 @@ test('safety revision fences stale resume authority', () => {
   assert.equal(safety.safetyRevision, 2);
 });
 
+/** Build a valid authorization-plan fixture that individual tests can modify. */
 function plan(operations: readonly GovernedOperation[]): ActionPlan {
   return new ActionPlan({ ...scoped, operations, planHash: 'exact-plan-hash', requesterId: userId,
     sourceRequestId: 'request-1', sourceOperationKey: 'enroll', authorityBinding: { revision: 1 },

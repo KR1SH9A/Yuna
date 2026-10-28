@@ -1,3 +1,4 @@
+/** Verify real child-process signal handling, graceful shutdown and failure exits. */
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -24,15 +25,18 @@ function startFixture(scenario: string) {
     resolve({ code, signal, ...(spawnError ? { error: spawnError } : {}) });
   }));
 
+  /** Wait for a specific child-process output marker, rejecting if the fixture exits too early. */
   function waitForText(text: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => finish(new Error(`Missing ${text}\n${stdout}\n${stderr}`)), 3_000);
+      /** Complete the fixture observation and release its listeners or pending waiters. */
       function finish(error?: Error): void {
         clearTimeout(timeout);
         child.stdout?.off('data', check);
         child.off('close', check);
         if (error) reject(error); else resolve();
       }
+      /** Check whether the fixture has reached the expected observable completion condition. */
       function check(): void {
         if (stdout.includes(text)) finish();
         else if (exited) finish(new Error(`Child exited before ${text}\n${stdout}\n${stderr}`));
@@ -43,6 +47,7 @@ function startFixture(scenario: string) {
     });
   }
 
+  /** Resolve when the child process exits so shutdown assertions use actual process completion. */
   async function waitForExit(): Promise<ExitResult> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -55,6 +60,7 @@ function startFixture(scenario: string) {
   return {
     child, waitForText, waitForExit,
     output: () => ({ stdout, stderr }),
+    /** Remove the fixture listeners and stop any child process left by a failed test. */
     async dispose() {
       if (!exited) child.kill('SIGKILL');
       await waitForExit();
@@ -68,10 +74,12 @@ async function withFixture(scenario: string, run: (fixture: ReturnType<typeof st
   try { await run(fixture); } finally { await fixture.dispose(); }
 }
 
+/** Send the selected operating-system signal to the test child process. */
 function signal(child: ChildProcess, name: NodeJS.Signals): void {
   assert.equal(child.kill(name), true, `Child must receive ${name}`);
 }
 
+/** Assert that the child exited normally after releasing its resources. */
 function assertCleanReturn(stdout: string, stopCount: number): void {
   assert.ok(stdout.includes(`fixture:returned:${JSON.stringify({ stopCount, SIGINT: 0, SIGTERM: 0 })}`));
 }
@@ -133,6 +141,18 @@ test('startup failures exit unsuccessfully without printing raw errors or their 
   });
 }, 10_000);
 
+test('a rejected startup bounds its hanging rollback without waiting for a signal', async () => {
+  await withFixture('startup-hanging-rollback', async fixture => {
+    await fixture.waitForText('fixture:stop:1');
+    assert.deepEqual(await fixture.waitForExit(), { code: 1, signal: null });
+    const { stdout, stderr } = fixture.output();
+    assert.match(stderr, /runtime failed/); assert.match(stderr, /deadline exceeded/);
+    assert.equal((stdout.match(/fixture:stop:/g) ?? []).length, 1);
+    assert.ok(!`${stdout}${stderr}`.includes('fixture-secret'));
+    assert.ok(!stdout.includes('bot: ready.')); assert.ok(!stdout.includes('fixture:signal:'));
+  });
+}, 10_000);
+
 for (const scenario of ['hanging-start', 'hanging-stop']) {
   test(`the shutdown deadline terminates ${scenario}`, async () => {
     await withFixture(scenario, async (fixture) => {
@@ -156,3 +176,27 @@ test('failed cleanup cannot leave an active resource running beyond the shutdown
     assertCleanReturn(stdout, 1);
   });
 }, 10_000);
+
+test('asynchronous ownership loss shuts down once and exits nonzero without waiting for an OS signal', async () => {
+  await withFixture('ownership-failure', async fixture => {
+    await fixture.waitForText('bot: ready.'); fixture.child.send('lose-ownership');
+    assert.deepEqual(await fixture.waitForExit(), { code: 1, signal: null });
+    const { stdout, stderr } = fixture.output();
+    assert.match(stderr, /bot: runtime failed;/); assert.ok(!stderr.includes('deadline exceeded'));
+    assert.ok(!`${stdout}${stderr}`.includes('fixture-secret')); assert.ok(stdout.includes('fixture:ownership-released'));
+    assert.ok(!stdout.includes('fixture:signal:')); assertCleanReturn(stdout, 1);
+  });
+}, 10_000);
+
+for (const scenario of ['ownership-hanging-start', 'ownership-hanging-stop']) {
+  test(`asynchronous ownership loss bounds cleanup for ${scenario}`, async () => {
+    await withFixture(scenario, async fixture => {
+      await fixture.waitForText(scenario.endsWith('start') ? 'fixture:starting' : 'bot: ready.');
+      fixture.child.send('lose-ownership');
+      assert.deepEqual(await fixture.waitForExit(), { code: 1, signal: null });
+      const { stdout, stderr } = fixture.output();
+      assert.match(stderr, /runtime failed/); assert.match(stderr, /deadline exceeded/);
+      assert.ok(!`${stdout}${stderr}`.includes('fixture-secret')); assert.ok(!stdout.includes('fixture:signal:'));
+    });
+  }, 10_000);
+}

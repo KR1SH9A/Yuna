@@ -2,7 +2,10 @@
  * Planned component: JobsModule
  * Kind: NestJS infrastructure composition module
  * Owner: Platform / Jobs
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Bot and worker composition roots directly construct their permitted task services/stores. Current operation uses no NestJS module or external queue.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Wire durable task records, restricted worker access, recovery and outbox delivery.

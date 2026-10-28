@@ -2,7 +2,10 @@
  * Planned component: JevModule
  * Kind: Provider capability module
  * Owner: AI worker / Jev
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: JevService is implemented. apps/ai-worker/ai-worker.module.ts constructs it directly; no framework module is required.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Register JevService and its selected SDK/HTTP configuration.

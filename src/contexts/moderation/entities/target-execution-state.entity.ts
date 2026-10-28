@@ -1,3 +1,4 @@
+/** Serialize conflicting moderation effects for one account across cases and installation generations. */
 import { nextCounter } from './moderation-values.js';
 import { Check, Entity, PrimaryKey, Property } from '@mikro-orm/decorators/legacy';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, invariant } from '../../../platform/db/entity-values.js';
@@ -17,6 +18,7 @@ export class TargetExecutionState {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Create an unclaimed target gate with a valid guild/account identity and starting timestamp. */
   constructor(input: TargetExecutionStateInput) {
     assertDiscordId(input.guildId);
     assertDiscordId(input.targetUserId);
@@ -27,6 +29,7 @@ export class TargetExecutionState {
     this.updatedAt = new Date(at);
   }
 
+  /** Claim an empty target gate for exactly one durable action and advance its execution fence. */
   claim(actionId: string, installationId: string, expectedGeneration: number, at: Date): number {
     assertUuid(actionId);
     assertUuid(installationId);
@@ -39,6 +42,7 @@ export class TargetExecutionState {
     return this.generation;
   }
 
+  /** Keep ownership after an ambiguous outcome so a later ban or reversal cannot race it. */
   retainUnresolved(actionId: string, expectedGeneration: number, at: Date): void {
     this.check(expectedGeneration, at);
     invariant(this.unresolvedActionId === actionId, 'The unresolved action does not own this target');
@@ -56,11 +60,13 @@ export class TargetExecutionState {
     this.touch(at);
   }
 
+  /** Validate the caller's target generation and prevent transition time from moving backward. */
   private check(expectedGeneration: number, at: Date): void {
     assertNonNegativeInteger(expectedGeneration, 'expectedGeneration');
     assertDate(at, 'at');
     invariant(this.generation === expectedGeneration, 'Stale target generation');
     invariant(at >= this.updatedAt, 'Transition time cannot move backwards');
   }
+  /** Advance the row revision and timestamp after a validated target-state change. */
   private touch(at: Date): void { this.rowRevision = nextCounter(this.rowRevision); this.updatedAt = new Date(at); }
 }

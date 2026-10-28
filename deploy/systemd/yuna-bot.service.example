@@ -1,0 +1,20 @@
+# Run the bot as an ordinary dedicated account; provider keys belong only to the separate worker.
+[Unit]
+Description=Yuna Discord bot
+After=network-online.target postgresql.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=__YUNA_USER__
+WorkingDirectory=__YUNA_DIRECTORY__
+ExecStart=__NODE_EXECUTABLE__ --env-file=.env.bot dist/apps/bot/cli.js
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+KillSignal=SIGTERM
+NoNewPrivileges=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+[Install]
+WantedBy=multi-user.target

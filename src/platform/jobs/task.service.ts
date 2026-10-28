@@ -1,14 +1,16 @@
+/** Bot-owned task registration, completion acceptance and cleanup share the owner's transaction. */
 import { createHash, randomUUID } from 'node:crypto';
 import { LockMode } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
-import type { ReplyGenerationInput } from '../../ai/contracts/generation.contracts.js';
-import { invariant } from '../db/entity-values.js';
+import { prepareReplyGenerationInput, type ReplyGenerationInput } from '../../ai/contracts/generation.contracts.js';
+import { assertDiscordId, invariant } from '../db/entity-values.js';
 import { AiTask } from './entities/ai-task.entity.js';
 import { PreparedInput } from './entities/prepared-input.entity.js';
 import { OutboxEntry } from './entities/outbox-entry.entity.js';
 import { TaskAcceptance } from './entities/task-acceptance.entity.js';
 import { TaskResult } from './entities/task-result.entity.js';
 import type { ConversationTaskCompletion, ConversationTaskScope } from './conversation-task.contracts.js';
+import { UsageService } from '../usage/usage.service.js';
 
 export type { ConversationTaskCompletion, ConversationTaskScope } from './conversation-task.contracts.js';
 
@@ -17,6 +19,7 @@ export interface ConversationTaskRegistration {
   guildId: string;
   requestId: string;
   input: ReplyGenerationInput;
+  knowledgeChannelId?: string;
   sourceEventId: string;
   sourceRevision: number;
   safetyRevision: number;
@@ -28,25 +31,29 @@ export interface ConversationTaskRegistration {
 
 /** Bot-side registration joins the owner's transaction; it never performs provider I/O. */
 export class TaskService {
+  /** Accounting owns the final permission to remove settled reservation records. */
+  constructor(private readonly usage = new UsageService()) {}
   /** Persist reciprocal task/input identities and their wake-up before the owner commits. */
   registerTask(em: EntityManager, input: ConversationTaskRegistration): string {
     invariant(em.isInTransaction(), 'Task registration requires the owner transaction');
-    invariant(input.input.text.length >= 1 && input.input.text.length <= 4000, 'Reply input must contain 1 to 4000 characters');
-    invariant(input.input.previousReply === undefined || input.input.previousReply.length <= 2000, 'Previous reply exceeds its bound');
-    invariant(Number.isInteger(input.input.maxOutputTokens) && input.input.maxOutputTokens >= 1 && input.input.maxOutputTokens <= 1024, 'Invalid output token bound');
+    const prepared = prepareReplyGenerationInput(input.input);
+    if (prepared.approvedKnowledge?.length) assertDiscordId(input.knowledgeChannelId!);
     invariant(input.deadline.getTime() <= input.now.getTime() + 120_000, 'Conversation work must expire within two minutes');
     const taskId = randomUUID();
     const inputId = randomUUID();
     const scope = { installationId: input.installationId, guildId: input.guildId, createdAt: input.now };
     const payload = {
-      text: input.input.text,
-      ...(input.input.previousReply === undefined ? {} : { previousReply: input.input.previousReply }),
-      maxOutputTokens: input.input.maxOutputTokens,
+      text: prepared.text,
+      ...(prepared.previousReply === undefined ? {} : { previousReply: prepared.previousReply }),
+      ...(prepared.approvedKnowledge?.length ? { approvedKnowledge: prepared.approvedKnowledge.map(entry => ({ ...entry })) } : {}),
+      maxOutputTokens: prepared.maxOutputTokens,
     };
     const contentHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     const validityBindings = {
       sourceEventId: input.sourceEventId, sourceRevision: input.sourceRevision,
       safetyRevision: input.safetyRevision,
+      ...(prepared.approvedKnowledge?.length ? { knowledgeBindings: prepared.approvedKnowledge.map(entry => ({ entryId: entry.entryId,
+        contentHash: entry.contentHash, revision: entry.revision, channelId: input.knowledgeChannelId! })) } : {}),
     };
     em.persist(new AiTask({
       ...scope, id: taskId, owner: 'community', operationKey: input.requestId,
@@ -82,8 +89,11 @@ export class TaskService {
       select t.id as "taskId",r.id as "resultId",t.workflow_id as "requestId",
         t.validity_bindings->>'sourceEventId' as "sourceEventId",
         (t.validity_bindings->>'sourceRevision')::integer as "sourceRevision",
-        (t.validity_bindings->>'safetyRevision')::integer as "safetyRevision",r.outcome,r.payload
+        (t.validity_bindings->>'safetyRevision')::integer as "safetyRevision",r.outcome,r.payload,
+        r.created_at as "resultCreatedAt",
+        (extract(epoch from (a.claimed_at-t.created_at))*1000)::double precision as "queueWaitMs"
       from public.ai_task t join public.task_result r on r.task_id=t.id
+      left join public.task_attempt a on a.id=r.attempt_id and a.task_id=t.id
       where t.installation_id=? and t.guild_id=? and t.owner='community' and t.kind='community.generate'
         and not exists(select 1 from public.task_acceptance a where a.result_id=r.id)
       order by r.completed_at,r.id limit ?`, [scope.installationId, scope.guildId, limit]);
@@ -156,5 +166,49 @@ export class TaskService {
       const acknowledgment = await em.findOne(TaskAcceptance, { ...scope, resultId: result.id });
       result.purgePayload({ reason: 'retention_expired', mode: 'retention', ownerAcknowledged: acknowledgment !== null, now });
     }
+  }
+
+  /** Installation removal revokes disclosures and erases provider payloads without rewriting execution outcomes. */
+  async cleanupForRemoval(em: EntityManager, scope: ConversationTaskScope, now: Date): Promise<{ disposition: 'pending' | 'retained' | 'complete'; reasonCode: string | null }> {
+    invariant(em.isInTransaction(), 'Jobs cleanup requires the owner transaction');
+    const inputs = await em.find(PreparedInput, { ...scope, payloadPurgedAt: null }, { limit: 50, orderBy: { id: 'asc' } });
+    for (const input of inputs) { input.invalidate('installation_removal', now); input.purgePayload('installation_removal', now); }
+    const results = await em.find(TaskResult, { ...scope, payloadPurgedAt: null }, { limit: 50, orderBy: { id: 'asc' } });
+    for (const result of results) {
+      const acknowledgment = await em.findOne(TaskAcceptance, { ...scope, resultId: result.id });
+      result.purgePayload({ reason: 'installation_removal', mode: 'privacy', ownerAcknowledged: acknowledgment !== null, now });
+    }
+    await em.flush();
+    if (await em.count(PreparedInput, { ...scope, payloadPurgedAt: null })
+      || await em.count(TaskResult, { ...scope, payloadPurgedAt: null })
+      || await em.count(AiTask, { ...scope, state: { $ne: 'TERMINAL' } })) return { disposition: 'pending', reasonCode: 'execution_recovery' };
+    return await em.count(AiTask, scope) ? { disposition: 'retained', reasonCode: 'execution_and_accounting_metadata' }
+      : { disposition: 'complete', reasonCode: null };
+  }
+
+  /** Delete an acknowledged, erased Community task graph only when its accounting lifetime is complete. */
+  async purgeWorkflowMetadata(em: EntityManager, scope: ConversationTaskScope, requestId: string, cutoff: Date, now: Date): Promise<boolean> {
+    invariant(em.isInTransaction(), 'Task metadata cleanup requires the owner transaction');
+    const tasks = await em.find(AiTask, { ...scope, owner: 'community', workflowId: requestId }, { lockMode: LockMode.PESSIMISTIC_WRITE });
+    if (tasks.length > 1) return false; // The implemented conversation route admits exactly one task.
+    for (const task of tasks) {
+      if (task.kind !== 'community.generate' || task.state !== 'TERMINAL' || task.createdAt > cutoff) return false;
+      const input = await em.findOneOrFail(PreparedInput, { ...scope, taskId: task.id });
+      const result = await em.findOneOrFail(TaskResult, { ...scope, taskId: task.id });
+      if (!input.payloadPurgedAt || !result.payloadPurgedAt || result.pendingOwnerDiscard
+        || !await em.findOne(TaskAcceptance, { ...scope, resultId: result.id })) return false;
+      // A future cross-owner binding keeps the graph alive until that owner releases it.
+      const references = await em.execute<{ present: boolean }[]>(`select exists(select 1 from moderation_case where expected_task_id=?)
+        or exists(select 1 from moderation_finding where observation_task_result_id=? or assessment_task_result_id=?) as present`, [task.id, result.id, result.id]);
+      if (references[0]?.present || !await this.usage.purgeTaskAccounting(em, scope, task.id, now)) return false;
+      await em.execute('delete from task_acceptance where installation_id=? and guild_id=? and task_id=?', [scope.installationId, scope.guildId, task.id]);
+      await em.execute('delete from task_result where installation_id=? and guild_id=? and task_id=?', [scope.installationId, scope.guildId, task.id]);
+      await em.execute('delete from task_attempt where installation_id=? and guild_id=? and task_id=?', [scope.installationId, scope.guildId, task.id]);
+      await em.execute('delete from outbox_entry where installation_id=? and guild_id=? and record_id in (?,?)', [scope.installationId, scope.guildId, task.id, input.id]);
+      await em.execute('delete from prepared_input where installation_id=? and guild_id=? and task_id=?', [scope.installationId, scope.guildId, task.id]);
+      await em.execute('delete from ai_task where installation_id=? and guild_id=? and id=?', [scope.installationId, scope.guildId, task.id]);
+    }
+    // Reciprocal deferred foreign keys require the Community owner to delete its request/delivery in this same commit.
+    return true;
   }
 }

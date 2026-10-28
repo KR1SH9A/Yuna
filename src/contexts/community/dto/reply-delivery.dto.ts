@@ -2,7 +2,10 @@
  * Planned component: Reply delivery result DTOs
  * Kind: Use-case input/output DTO catalogue
  * Owner: Community
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Current delivery uses DiscordReplyRequest/DiscordSendResult and the reply-delivery owner; this generic DTO catalog is not the live transport contract.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility: Describe existing publication/recovery outcomes without adding a request wrapper
  * for every internal effect parameter.

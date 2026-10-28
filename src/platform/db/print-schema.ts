@@ -1,3 +1,4 @@
+/** Print the reviewed entity schema for inspection without applying it to a running database. */
 import { MikroORM } from '@mikro-orm/postgresql';
 import { entityOrmConfig } from './mikro-orm.config.js';
 import { createEntitySchemaSql } from './schema-constraints.js';

@@ -2,7 +2,10 @@
  * Planned component: TaskRecoveryService
  * Kind: Durable technical recovery coordinator
  * Owner: Platform / Jobs
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: TaskService, ModerationTaskService and DebateTaskService expose bounded recovery through restricted SQL functions. The generic coordinator below is a future extension only.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Restore progress from database state when queue delivery, workers or completion notifications

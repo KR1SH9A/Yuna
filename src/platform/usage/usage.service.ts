@@ -1,34 +1,23 @@
-/**
- * Planned component: UsageService
- * Kind: Atomic reservation and accounting service
- * Owner: Platform / Usage
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Admit bounded provider cost and account for every paid or potentially paid attempt.
- *
- * Planned methods:
- * - reserve: trusted guild, operation/attempt, bounded estimate and policy snapshot -> reservation
- *   or limit denial. Atomically check available budget and reserve it; join task registration's
- *   transaction where required and account for retries.
- * - settleAttempt: reservation, matching attempt and measured provider usage -> settlement
- *   outcome. Deduplicate usage records and reconcile reserved/actual cost.
- * - markUncertainCost: reservation/attempt and timeout or unresolved billing evidence -> retained
- *   liability. Preserve a conservative estimate until cost is resolved.
- * - releaseUnusedReservation: reservation and proof no corresponding spend occurred -> released
- *   amount or refusal. Release only genuinely unused capacity.
- * - reconcileReservations: bounded due reservation/entry references and available evidence ->
- *   settled/released or still-unknown liability with next due time; no refund on lease expiry.
- * - runRetention: bounded eligible accounting records/time -> minimal retained evidence or purge
- *   after the configured accounting disposition; never cascade-delete unresolved spend.
- *
- * Boundaries/invariants:
- * No check-then-write budget race and no independent commit inside a caller's atomic workflow.
- * Policy ownership stays in Administration; this service implements limits. Lease expiry,
- * cancellation after release, or rejected/stale output does not refund an already sent model
- * request. Retries may incur additional independently tracked cost. No provider call,
- * business-stage selection, moderation decision or permission grant. Bind work references to
- * installationId/guildId, but count applicable previous-installation spend/liabilities in the same
- * guild/provider/window. Policy snapshots and resolved windows remain on reservations. Budget
- * checks count a reservation and its paired usage entry once; actual overruns remain truthful.
- */
+/** Read and expire settled accounting; reservation, dispatch and settlement stay atomic in restricted SQL entry points. */
+import type { EntityManager } from '@mikro-orm/postgresql';
+import { invariant, assertUuid } from '../db/entity-values.js';
+import type { ConversationTaskScope } from '../jobs/conversation-task.contracts.js';
+
+export class UsageService {
+  /** Retain every unresolved liability and every accounting row whose configured lifetime has not elapsed. */
+  async purgeTaskAccounting(em: EntityManager, scope: ConversationTaskScope, taskId: string, now: Date): Promise<boolean> {
+    invariant(em.isInTransaction(), 'Accounting cleanup requires the owner transaction');
+    assertUuid(taskId);
+    const rows = await em.execute<{ id: string; eligible: boolean }[]>(`select id,
+      state in ('settled','released') and purge_after<=? and not exists(
+        select 1 from usage_entry e where e.reservation_id=u.id and (e.purge_after>? or e.accounting_state not in ('actual','no-spend'))
+      ) as eligible from usage_reservation u where installation_id=? and guild_id=? and task_id=? order by id for update`,
+      [now, now, scope.installationId, scope.guildId, taskId]);
+    if (rows.some(row => !row.eligible)) return false;
+    for (const row of rows) {
+      await em.execute('delete from usage_entry where installation_id=? and guild_id=? and reservation_id=?', [scope.installationId, scope.guildId, row.id]);
+      await em.execute('delete from usage_reservation where installation_id=? and guild_id=? and id=?', [scope.installationId, scope.guildId, row.id]);
+    }
+    return true;
+  }
+}

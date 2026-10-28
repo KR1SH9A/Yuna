@@ -1,3 +1,4 @@
+/** Store immutable control and execution audit envelopes containing references rather than private payloads. */
 import { Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertDiscordId, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../db/entity-values.js';
@@ -32,6 +33,7 @@ export class AuditEntry extends ScopedEntity {
   @Property({ type: 'text' }) readonly idempotencyKey: string;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly purgeAfter: Date;
 
+  /** Validate immutable audit identity, origin, outcome and bounded references before persistence. */
   constructor(input: AuditEntryInput) {
     super(input);
     assertDate(input.occurredAt, 'occurredAt');

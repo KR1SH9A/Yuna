@@ -1,6 +1,7 @@
+/** Persist installation identity, operator-approved settings and resumable removal progress. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { RecordEntity } from '../../../platform/db/base.entity.js';
-import { assertDate, assertDiscordId, assertNonNegativeInteger, copyJson, invariant } from '../../../platform/db/entity-values.js';
+import { assertDate, assertDiscordId, assertNonNegativeInteger, copyJson, invariant, type JsonObject } from '../../../platform/db/entity-values.js';
 
 export type InstallationState = 'active' | 'suspended' | 'removing' | 'removed';
 export type DiscordAvailability = 'unknown' | 'available' | 'unavailable';
@@ -30,6 +31,7 @@ export interface GuildInstallationInput {
 @Check({ name: 'guild_installation_check_3', expression: `("state" = 'removed') = ("removed_at" is not null)` })
 @Check({ name: 'guild_installation_check_4', expression: `"state" not in ('removing', 'removed') or "removal_started_at" is not null` })
 @Check({ name: 'guild_installation_check_5', expression: '"row_revision" >= 1' })
+@Check({ name: 'guild_installation_policy_revision_check', expression: '"policy_revision" >= 0' })
 export class GuildInstallation extends RecordEntity {
   @Property({ type: 'text' }) readonly guildId: string;
   @Property({ type: 'integer' }) readonly generation: number;
@@ -37,6 +39,8 @@ export class GuildInstallation extends RecordEntity {
   @Property({ type: 'text' }) discordAvailability: DiscordAvailability = 'unknown';
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) availabilityObservedAt: Date | null = null;
   @Property({ type: 'json' }) featureAdmission: FeatureAdmission;
+  @Property({ type: 'json', nullable: true }) operatorPolicy: JsonObject | null = null;
+  @Property({ type: 'integer' }) policyRevision = 0;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly registeredAt: Date;
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) suspendedAt: Date | null = null;
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) removalStartedAt: Date | null = null;
@@ -47,6 +51,7 @@ export class GuildInstallation extends RecordEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Create a new installation generation with explicit feature admission and registration time. */
   constructor(input: GuildInstallationInput) {
     super(input);
     assertDiscordId(input.guildId);
@@ -60,6 +65,33 @@ export class GuildInstallation extends RecordEntity {
     this.updatedAt = new Date(input.registeredAt);
   }
 
+  /** Store a validated, authorized configuration under the installation lock; old work keeps its snapshots. */
+  updateOperatorPolicy(expectedRevision: number, policy: JsonObject, at: Date): void {
+    invariant(this.state === 'active' || this.state === 'suspended', 'Removed installation cannot configure');
+    invariant(this.policyRevision === expectedRevision, 'Stale operator policy revision');
+    invariant(this.policyRevision < 2_147_483_647 && this.rowRevision < 2_147_483_647, 'Policy revision exhausted');
+    assertDate(at, 'at');
+    invariant(at >= this.updatedAt, 'Configuration time cannot move backwards');
+    const copied = copyJson(policy);
+    invariant(Buffer.byteLength(JSON.stringify(copied), 'utf8') <= 131_072, 'Operator policy exceeds storage bound');
+    this.operatorPolicy = copied;
+    this.policyRevision += 1;
+    this.advanceRevision(at);
+  }
+
+  /** Revise admission under the installation lock; the owning service fences or drains existing work. */
+  updateFeatureAdmission(expectedRowRevision: number, admission: FeatureAdmission, at: Date): void {
+    invariant(this.state === 'active' || this.state === 'suspended', 'Removed installation cannot configure');
+    invariant(this.rowRevision === expectedRowRevision && this.rowRevision < 2_147_483_647, 'Stale installation revision');
+    assertDate(at, 'at');
+    invariant(at >= this.updatedAt, 'Configuration time cannot move backwards');
+    invariant(Object.keys(admission).length <= 16 && Object.entries(admission).every(([key, value]) =>
+      /^[a-z][a-z0-9_]{0,63}$/.test(key) && ['enabled', 'disabled', 'read_only'].includes(value)), 'Invalid feature admission');
+    this.featureAdmission = copyJson(admission);
+    this.advanceRevision(at);
+  }
+
+  /** Record the newest observed Discord availability; ignore an older observation so recovery cannot undo a later outage. */
   recordAvailability(value: DiscordAvailability, observedAt: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     assertDate(observedAt, 'observedAt');
@@ -70,6 +102,7 @@ export class GuildInstallation extends RecordEntity {
     this.advanceRevision(observedAt);
   }
 
+  /** Stop ordinary installation admission while preserving the same generation and a bounded operational reason. */
   suspend(reasonCode: string, at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     invariant(this.state === 'active' || this.state === 'suspended', 'Installation cannot suspend');
@@ -82,6 +115,7 @@ export class GuildInstallation extends RecordEntity {
     this.advanceRevision(at);
   }
 
+  /** Return a suspended installation to active use; a removed generation can never be resumed. */
   resume(at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     invariant(this.state === 'active' || this.state === 'suspended', 'Removed installation cannot resume');
@@ -109,6 +143,7 @@ export class GuildInstallation extends RecordEntity {
     this.advanceRevision(at);
   }
 
+  /** Accept one captured cleanup owner's progress without allowing a completed disposition to regress. */
   recordCleanupProgress(owner: string, progress: CleanupProgress, at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     invariant(this.state === 'removing', 'Cleanup requires a removing installation');
@@ -125,6 +160,7 @@ export class GuildInstallation extends RecordEntity {
     this.advanceRevision(at);
   }
 
+  /** Mark removal finished only after every captured owner has completed cleanup or recorded why minimal data must remain. */
   completeRemoval(at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     if (this.state === 'removed') return;
@@ -140,6 +176,7 @@ export class GuildInstallation extends RecordEntity {
     this.advanceRevision(at);
   }
 
+  /** Advance optimistic concurrency metadata after a valid local state transition. */
   private advanceRevision(at: Date): void {
     this.rowRevision += 1;
     this.updatedAt = new Date(at);

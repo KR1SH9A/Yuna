@@ -1,3 +1,4 @@
+/** Verify runtime database startup, ownership and cleanup against a private PostgreSQL cluster. */
 import assert from 'node:assert/strict';
 import { afterAll, beforeAll, test } from '@jest/globals';
 import { MikroORM } from '@mikro-orm/postgresql';

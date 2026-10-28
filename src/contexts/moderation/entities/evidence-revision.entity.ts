@@ -1,3 +1,4 @@
+/** Retain authentic original-create evidence and explicit capture gaps without replacing it with later edits. */
 import { createHash } from 'node:crypto';
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
@@ -70,6 +71,7 @@ export class EvidenceRevision extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Validate exact source provenance, retained coverage and any completion of the same original capture. */
   constructor(input: EvidenceRevisionInput) {
     super(input);
     for (const value of [input.caseId, input.originalEventId]) assertUuid(value);

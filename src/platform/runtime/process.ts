@@ -1,3 +1,4 @@
+/** Run an application with graceful signal handling and bounded, credential-free process diagnostics. */
 import { StartupCancelledError, type RunningApplication } from './application.js';
 
 /**
@@ -6,7 +7,7 @@ import { StartupCancelledError, type RunningApplication } from './application.js
  * Importing this module has no effects. Call it once in a dedicated executable process.
  */
 export async function runApplicationProcess(
-  role: 'bot' | 'ai-worker', bootstrap: (signal: AbortSignal) => Promise<RunningApplication>,
+  role: 'bot' | 'ai-worker', bootstrap: (signal: AbortSignal, onFailure: () => void) => Promise<RunningApplication>,
   shutdownTimeoutMs = 10_000,
 ): Promise<void> {
   if (!Number.isSafeInteger(shutdownTimeoutMs) || shutdownTimeoutMs < 1 || shutdownTimeoutMs > 2_147_483_647) {
@@ -17,6 +18,7 @@ export async function runApplicationProcess(
   const requested = new Promise<void>(resolve => { resolveShutdown = resolve; });
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let failed = false;
+  let finished = false;
   // Fake integrations have no active handles; keep the development host alive until a signal.
   const keepAlive = setInterval(() => {}, 60_000);
 
@@ -34,26 +36,41 @@ export async function runApplicationProcess(
     deadline = setTimeout(forceExit, shutdownTimeoutMs);
   }
 
+  /** Fatal resources request ordinary cleanup with a failure exit code; no synthetic OS signal is needed. */
+  function reportFailure(): void {
+    if (finished) return;
+    if (!failed) {
+      failed = true; process.exitCode = 1;
+      console.error(`${role}: runtime failed; check role configuration, supported modes and database connectivity.`);
+    }
+    requestShutdown();
+  }
+
   process.on('SIGINT', requestShutdown);
   process.on('SIGTERM', requestShutdown);
   try {
-    const app = await bootstrap(controller.signal);
+    const app = await bootstrap(controller.signal, reportFailure);
+    // The startup callback covers failures during bootstrap; this signal also supports independently composed applications.
+    if (app.failure) void app.failure.then(reportFailure, reportFailure);
     if (!controller.signal.aborted) console.info(`${role}: ready.`);
     await requested;
     await app.shutdown();
   } catch (error) {
     if (!(error instanceof StartupCancelledError && controller.signal.aborted)) {
       // Unexpected driver/adapter errors can include credentials. Never print raw errors here.
-      console.error(`${role}: runtime failed; check role configuration, supported modes and database connectivity.`);
-      process.exitCode = 1;
-      failed = true;
+      if (!failed) {
+        console.error(`${role}: runtime failed; check role configuration, supported modes and database connectivity.`);
+        process.exitCode = 1; failed = true;
+      }
       // A failed close may leave active handles. Permit natural exit, but cap any leaked handles.
       deadline ??= setTimeout(forceExit, shutdownTimeoutMs);
       deadline.unref();
     }
   } finally {
+    finished = true;
     clearInterval(keepAlive);
     if (!failed) clearTimeout(deadline);
+    else deadline?.unref();
     process.off('SIGINT', requestShutdown);
     process.off('SIGTERM', requestShutdown);
   }

@@ -1,0 +1,10 @@
+# Replace the directory before using logrotate; copytruncate preserves launchd's open log descriptors.
+# Schedule logrotate regularly; this file alone does not install a rotation schedule.
+__YUNA_DIRECTORY__/.local/logs/*.log {
+  size 10M
+  rotate 5
+  compress
+  missingok
+  notifempty
+  copytruncate
+}

@@ -2,7 +2,10 @@
  * Planned component: DiscordStateReader
  * Kind: Outbound read adapter
  * Owner: Discord boundary
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: DiscordGateway and the narrow moderation/debate transports read current source, native authority and reconciliation facts. The generic facade below is unused.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Obtain the current Discord facts required by an owning feature.

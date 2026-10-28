@@ -3,7 +3,7 @@ node_modules/
 .npm/
 .pnpm-store/
 
-# NestJS / TypeScript build output
+# TypeScript build output
 dist/
 build/
 *.tsbuildinfo
@@ -51,3 +51,6 @@ Desktop.ini
 
 # Keep lockfiles, migrations, fixtures and shared editor configuration in Git.
 considerations.txt
+
+# Local server policy; committed starter templates remain available for contributors.
+/config/yuna.json

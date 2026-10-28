@@ -1,3 +1,4 @@
+/** Retain bounded source observations and current-source markers independently from owner processing receipts. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { BigIntType } from '@mikro-orm/core';
 import { ScopedEntity } from '../../db/base.entity.js';
@@ -84,6 +85,7 @@ export class IntakeEvent extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Capture one bounded observation and its source identity while separating observation data from owner receipts. */
   constructor(input: IntakeEventInput) {
     super(input);
     invariant(input.sourceEventKey.length > 0, 'Event identity is required');
@@ -136,8 +138,10 @@ export class IntakeEvent extends ScopedEntity {
     this.isCurrentSourceMarker = true;
   }
 
+  /** Stop treating this event as the current source marker without erasing retained original evidence. */
   retireMarker(): void { this.isCurrentSourceMarker = false; }
 
+  /** Erase retained event content at an authorized boundary while preserving minimal source and replay metadata. */
   purgePayload(now: Date, reason: string): void {
     assertDate(now, 'now');
     invariant(now >= this.observedAt && reason.length > 0, 'Purge needs a valid time and reason');

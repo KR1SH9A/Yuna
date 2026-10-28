@@ -1,11 +1,11 @@
+/** Verify checksummed migrations, upgrades and least-privilege roles against isolated PostgreSQL databases. */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { inspect } from 'node:util';
 import { afterAll, beforeAll, test } from '@jest/globals';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { DatabasePreparationError, prepareDatabase, type DatabasePreparationResult } from '../../src/platform/db/migrations/migrate.js';
-import { entityOrmConfig } from '../../src/platform/db/mikro-orm.config.js';
-import { createEntitySchemaSql } from '../../src/platform/db/schema-constraints.js';
 import { temporaryPostgres } from '../helpers/temporary-postgres.js';
 
 let database: ReturnType<typeof temporaryPostgres>;
@@ -20,17 +20,20 @@ function adminUrl(name: string, user = 'yuna_test'): string {
   url.searchParams.set('host', database.options.host);
   return url.href;
 }
+/** Build isolated preparation settings with deliberately awkward passwords to test safe quoting. */
 function settings(name = selectedDatabase) {
   return { adminDatabaseUrl: adminUrl(name),
     botDatabasePassword: "fixture-secret-bot'; grant yuna_bot to yuna_worker; --\\",
     workerDatabasePassword: "fixture-secret-worker\\password'quote" };
 }
+/** Open the selected fixture connection without using production environment credentials. */
 function connect(name: string, user = 'yuna_test'): MikroORM {
   const orm = new MikroORM({ ...database.options, dbName: name, user, entities: [], entitiesTs: [],
     discovery: { warnWhenNoEntities: false }, ensureDatabase: false, preferEnvVars: false, debug: false, logger: () => {} });
   connections.add(orm);
   return orm;
 }
+/** Check that preparation returns the expected safe classification without leaking fixture secrets. */
 function safePreparationError(code: DatabasePreparationError['code']): (error: unknown) => boolean {
   return error => {
     assert.ok(error instanceof DatabasePreparationError);
@@ -52,17 +55,17 @@ afterAll(async () => {
   finally { database?.close(); }
 }, 30_000);
 
-test('initial preparation applies both checksummed migrations and repeat preparation is idempotent', async () => {
-  assert.deepEqual(initial.migrations.map(row => row.status), ['applied', 'applied']);
+test('initial preparation applies nine checksummed migrations and repeat preparation is idempotent', async () => {
+  assert.deepEqual(initial.migrations.map(row => row.status), Array(9).fill('applied'));
   assert.deepEqual(initial.roles, ['yuna_bot', 'yuna_worker']);
   assert.equal(initial.database, selectedDatabase);
   const repeated = await prepareDatabase(settings());
-  assert.deepEqual(repeated.migrations.map(row => row.status), ['already_applied', 'already_applied']);
+  assert.deepEqual(repeated.migrations.map(row => row.status), Array(9).fill('already_applied'));
   assert.ok(Object.isFrozen(repeated) && Object.isFrozen(repeated.migrations));
   const orm = connect(selectedDatabase);
   const rows = await orm.em.fork().execute<{ version: number; checksum: string }[]>(
     'select version,checksum from public.yuna_schema_migrations order by version');
-  assert.deepEqual(rows.map(row => row.version), [1, 2]);
+  assert.deepEqual(rows.map(row => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
   assert.ok(rows.every(row => /^[a-f0-9]{64}$/.test(row.checksum)));
   const roles = await inspector.em.fork().execute<{ unsafe: boolean }[]>(`select
     rolsuper or rolcreatedb or rolcreaterole or rolinherit or rolreplication or rolbypassrls or not rolcanlogin as unsafe
@@ -74,17 +77,46 @@ test('initial preparation applies both checksummed migrations and repeat prepara
   assert.equal(memberships[0]?.count, 0, 'Quoted passwords cannot inject a role grant');
 });
 
-test('the immutable initial migration matches the complete core generator and preserves its guards', async () => {
-  const metadata = new MikroORM(entityOrmConfig());
-  try {
-    const generated = await createEntitySchemaSql(metadata);
-    const migration = await readFile(new URL('../../../src/platform/db/migrations/001-core.sql', import.meta.url), 'utf8');
-    assert.equal(migration, generated);
-  } finally { await metadata.close(true); }
+test('existing earlier databases upgrade without rewriting migration history or data', async () => {
+  for (const version of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    const name = `migration_upgrade_v${version}`;
+    await inspector.em.fork().execute(`create database ${name}`);
+    const orm = connect(name);
+    await orm.em.fork().execute(`create table public.yuna_schema_migrations (
+      version integer primary key, name text not null unique, checksum text not null,
+      applied_at timestamptz not null default now());
+      create table public.upgrade_probe(value text); insert into public.upgrade_probe values('preserve')`);
+    const oldRows: { version: number; name: string; checksum: string }[] = [];
+    for (const [index, migrationName] of ['001-core.sql', 'conversation-worker.sql', '003-conversation-notifications.sql', '004-operating-controls.sql', '005-moderation-worker.sql', '006-user-quotas.sql', '007-knowledge-context.sql', '008-memory.sql'].slice(0, version).entries()) {
+      const sql = await readFile(new URL(`../../../src/platform/db/migrations/${migrationName}`, import.meta.url), 'utf8');
+      const checksum = createHash('sha256').update(sql).digest('hex');
+      await orm.em.fork().execute(sql);
+      const row = { version: index + 1, name: migrationName, checksum };
+      await orm.em.fork().execute('insert into public.yuna_schema_migrations(version,name,checksum) values(?,?,?)',
+        [row.version, row.name, row.checksum]);
+      oldRows.push(row);
+    }
+    const upgraded = await prepareDatabase(settings(name));
+    assert.deepEqual(upgraded.migrations.map(row => row.status),
+      Array.from({ length: 9 }, (_, index) => index < version ? 'already_applied' : 'applied'));
+    const history = await orm.em.fork().execute<{ version: number; name: string; checksum: string }[]>(
+      'select version,name,checksum from public.yuna_schema_migrations order by version');
+    assert.deepEqual(history.slice(0, version), oldRows);
+    assert.equal(history[2]?.name, '003-conversation-notifications.sql');
+    assert.deepEqual(await orm.em.fork().execute('select value from public.upgrade_probe'), [{ value: 'preserve' }]);
+    const triggers = await orm.em.fork().execute<{ count: number }[]>(`select count(*)::integer as count from pg_trigger
+      where not tgisinternal and tgname in ('ai_task_notify_ready','task_result_notify_ready')`);
+    assert.equal(triggers[0]?.count, 2);
+  }
+}, 20_000);
+
+test('the initial migration remains immutable and additive migrations preserve its guards', async () => {
+  const migration = await readFile(new URL('../../../src/platform/db/migrations/001-core.sql', import.meta.url), 'utf8');
+  assert.equal(createHash('sha256').update(migration).digest('hex'), '98529b0755b79b3df7e932691acd29885c83961298f91993c9ba88478f3c5e11');
   const orm = connect(selectedDatabase);
   const tables = await orm.em.fork().execute<{ count: number }[]>(`select count(*)::integer as count
     from information_schema.tables where table_schema='public' and table_type='BASE TABLE'`);
-  assert.equal(tables[0]?.count, 29, 'Core tables plus the migration ledger only');
+  assert.equal(tables[0]?.count, 39, 'Core, quota, private Memory, Debate tables and the migration ledger');
   const guards = await orm.em.fork().execute<{ conname: string }[]>(`select conname from pg_constraint where conname in
     ('prepared_input_privacy_scope_id_disabled','reply_delivery_accepted_result_fk','moderation_action_exact_evidence_fk','ai_task_prepared_input_id_scope_fk')`);
   assert.equal(guards.length, 4);
@@ -106,11 +138,17 @@ test('actual runtime logins have only their enabled data and function privileges
   await assert.rejects(worker.em.fork().execute('select public.yuna_conversation_recover(1)'), /permission denied/i);
   await assert.rejects(worker.em.fork().execute("select public.yuna_conversation_gate('00000000-0000-0000-0000-000000000000')"), /permission denied/i);
   await bot.em.fork().execute('select * from public.conversation_request');
+  await bot.em.fork().execute('select * from public.capability_grant');
+  await bot.em.fork().execute('select * from public.audit_entry');
+  await bot.em.fork().execute('select * from public.moderation_case');
+  await bot.em.fork().execute('select * from public.evidence_revision');
   await bot.em.fork().execute('select public.yuna_conversation_recover(1)');
-  for (const table of ['moderation_case', 'evidence_revision', 'capability_grant', 'artifact_record', 'yuna_schema_migrations']) {
+  for (const table of ['artifact_record', 'yuna_schema_migrations']) {
     await assert.rejects(bot.em.fork().execute(`select * from public.${table}`), /permission denied/i);
   }
   for (const orm of [worker, bot]) {
+    await assert.rejects(orm.em.fork().execute('select public.yuna_notify_tasks_ready()'), /permission denied/i);
+    await assert.rejects(orm.em.fork().execute('select public.yuna_notify_results_ready()'), /permission denied/i);
     await assert.rejects(orm.em.fork().execute('create table public.runtime_ddl_is_forbidden(id integer)'), /permission denied/i);
     await assert.rejects(orm.em.fork().execute('alter table public.conversation_request add column forbidden integer'), /must be owner|permission denied/i);
   }
@@ -124,9 +162,9 @@ test('checksum tampering and unknown migration versions stop setup without expos
     await assert.rejects(prepareDatabase(settings()), safePreparationError('migration_mismatch'));
   } finally { await orm.em.fork().execute('update public.yuna_schema_migrations set checksum=? where version=1', [before[0]!.checksum]); }
   try {
-    await orm.em.fork().execute("insert into public.yuna_schema_migrations(version,name,checksum) values(3,'unknown.sql',?)", ['0'.repeat(64)]);
+    await orm.em.fork().execute("insert into public.yuna_schema_migrations(version,name,checksum) values(99,'unknown.sql',?)", ['0'.repeat(64)]);
     await assert.rejects(prepareDatabase(settings()), safePreparationError('migration_mismatch'));
-  } finally { await orm.em.fork().execute('delete from public.yuna_schema_migrations where version=3'); }
+  } finally { await orm.em.fork().execute('delete from public.yuna_schema_migrations where version=99'); }
 });
 
 test('a failed schema migration rolls back new objects and leaves existing unrelated objects intact', async () => {
@@ -173,10 +211,12 @@ test('runtime credentials and nonowner admin accounts cannot run preparation', a
 
 test('direct grants to internal worker helpers are detected without accepting privilege drift', async () => {
   const orm = connect(selectedDatabase);
-  try {
-    await orm.em.fork().execute('grant execute on function public.yuna_conversation_gate(uuid) to yuna_worker');
-    await assert.rejects(prepareDatabase(settings()), safePreparationError('unsafe_runtime_role'));
-  } finally { await orm.em.fork().execute('revoke execute on function public.yuna_conversation_gate(uuid) from yuna_worker'); }
+  for (const identity of ['public.yuna_conversation_gate(uuid)', 'public.yuna_notify_tasks_ready()', 'public.yuna_notify_results_ready()']) {
+    try {
+      await orm.em.fork().execute(`grant execute on function ${identity} to yuna_worker`);
+      await assert.rejects(prepareDatabase(settings()), safePreparationError('unsafe_runtime_role'));
+    } finally { await orm.em.fork().execute(`revoke execute on function ${identity} from yuna_worker`); }
+  }
 });
 
 test('concurrent preparation serializes migration application instead of duplicating its history', async () => {
@@ -185,7 +225,7 @@ test('concurrent preparation serializes migration application instead of duplica
   assert.deepEqual(results.map(result => result.migrations[0]!.status).sort(), ['already_applied', 'applied']);
   const orm = connect('migration_concurrent');
   const rows = await orm.em.fork().execute<{ count: number }[]>('select count(*)::integer as count from public.yuna_schema_migrations');
-  assert.equal(rows[0]?.count, 2);
+  assert.equal(rows[0]?.count, 9);
 }, 20_000);
 
 test('PUBLIC privileges on unrelated data cause refusal without changing that data or its grants', async () => {

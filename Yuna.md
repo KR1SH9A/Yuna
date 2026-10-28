@@ -1,106 +1,193 @@
 # Yuna implementation guide
 
-Last updated: 21 October 2026. Function index, data flow and implementation status requested in [considerations.txt](considerations.txt). Start with [the Mac/server test guide](docs/LOCAL_TEST.md).
+Updated 28 October 2026. This is the function, data-flow and implementation guide requested in [considerations.txt](considerations.txt). Read [local setup](docs/LOCAL_TEST.md), [configuration](config/README.md) and [operations](docs/OPERATIONS.md) for running an installation.
 
-## Confirmed scope and current state
+## Scope and current state
 
-Basic conversation comes first: mention Yuna or reply to her in any channel she can read/send to in one configured server. Run on this Mac. DeepSeek uses its direct API; Jev will use OpenRouter for structured decisions later. Reuse existing code and add missing functions when required, as clarified by the user.
+The selected implementation now includes conversations, approved server knowledge, text moderation, staff ban/unban controls, member quotas and spending preferences, explicit private memory, and consented structured debates. Administration owns authority, configuration, safety and removal. PostgreSQL owns durable claims and accounting; separate bot and worker processes own Discord and provider I/O respectively.
 
-The conversation slice is now executable: Discord Gateway, durable intake, Community admission, restricted worker task functions, fake/live DeepSeek, owner acceptance, Discord delivery/reconciliation, payload cleanup, explicit migrations and separate CLI processes. All 40 entity mappings remain; the core registry has 27 entities and 13 staged entities are opt-in. Moderation, memory, debates, knowledge retrieval, Jev execution and broader administration remain scaffolds.
+The user authorized completing the remaining implementation, adding missing behavior where existing functions could not provide it, supplying editable defaults, and documenting files and methods. Existing notification and latency changes were preserved. No commit or push is part of this work.
 
-This pilot uses ordinary TypeScript composition, MikroORM transactions and PostgreSQL polling. It does not need NestJS, Redis or a queue service. Existing outbox records track durable wake-ups; polling the authoritative task/result rows recovers lost wake-ups.
+There are 40 entity mappings: 36 enabled and four staged. Nine versioned migrations deploy the enabled schema and restricted worker functions. The personal usage preference table is SQL-owned rather than an ORM entity. Staged mappings are ActionPlan, PlanApproval, CustodianEnrollment and FactEmbedding. Their presence does not enable governance or semantic search.
 
-## First working flow
+This is ordinary TypeScript composition with MikroORM transactions and PostgreSQL notifications plus fallback scans. It does not require a web server, Redis or a second queue system. One bot owns one configured guild; workers share a bounded concurrency limit across enabled task routes. Provider policy is model-selectable, while the current adapters implement DeepSeek chat and OpenRouter Decisions protocols.
+
+## Plan disposition
+
+These are review units from the original remaining-work plan, now grouped by delivered behavior. Automated verification proves local behavior with fake external boundaries; it does not replace a live server acceptance session.
+
+| Original items | Delivered implementation and evidence |
+| --- | --- |
+| P1–P4 | Current-state documentation; recovery from rejected Gateway owner callbacks; real PostgreSQL acceptance/invalidation/rollback races; cancellation versus committed delivery and unknown-send recovery. |
+| P6–P8 | CI workflow, V8 coverage reporting, AST dependency/cycle checks, and file/method documentation checks. Local checks do not establish that hosted CI has run. |
+| O1–O6b | Current owner bootstrap, scoped grants/revocation, native permission checks, pause/resume, channel and feature configuration, revision fencing, transactional audit and bounded status commands. |
+| O7–O8 | Exact decimal guild budgets, admitted price snapshots, atomic reservations, late settlement, conservative unknown charges and per-member quotas/preferences. |
+| O9–O10c | Bounded payload/metadata cleanup, owner removal dispositions and generation-safe reinstall. Unresolved effects, charges and required lineage remain explicitly retained. |
+| O11a–O11c | One-bot session ownership, bounded process lifecycle, health CLI, supervisor/log templates, actual isolated backup/restore rehearsal and finite fake-provider load exercise. |
+| J1–J3 | Typed Choice/Noul/Score adapter and durable moderation/debate worker routes with owner acceptance. Fake or uncertain output cannot establish misconduct. |
+| M1a–M9 | Original-only intake and reports, immutable policy/evidence, bounded observation, typed rule assessment, findings, warning/ban/unban intents, shared target execution, reconciliation, audit and cleanup. |
+| M10 | Automatic warning/ban execution machinery is implemented and tested. The shipped starter policy warns on supported violations; administrators must explicitly configure any automatic ban mapping. No live ban rule was activated. |
+| K1–K2 | Authorized knowledge approval/replacement/retirement, visibility-aware lexical retrieval and invalidation through provider disclosure and sending. |
+| N1–N4 | Explicit private memory consent, member-submitted facts, inspection/search, withdrawal/forget/expiry and removal. No silent chat extraction, public injection or embeddings. |
+| D1–D3 | Exact-scope participant consent, explicit submissions, frozen transcript/rubric, typed Jev evaluation, deterministic totals, optional paired scoring, publication and cleanup. |
+| P5 and deployment acceptance | Still requires an operator's live Discord/provider session, real response-quality evaluation and deployment-specific timings. No credentials were used or external command registration, migration or deployment performed here. |
+
+The optional kick, governance, artifact-storage and embedding component methods are now implemented as described below. Their remaining command/deployment/workflow integration is separate. Autonomous participation, semantic retrieval, inferred memory, media-content moderation, coordinated spam/raid detection and multiple active bot owners remain outside the released feature scope.
+
+## Optional component methods completed on 28 October
+
+The fifteen documented method responsibilities have executable implementations. Kick methods reuse the established moderation owners rather than introducing a duplicate coordinator. These additions do not register Discord commands, apply production migrations, provision initial custodians or enable provider disclosure from Memory.
+
+| Planned methods | Executable owner and reason |
+| --- | --- |
+| `prepareKick` | [StaffModerationService.requestKick](src/contexts/moderation/staff-moderation.service.ts) validates a separately authenticated caller, exact kick grant, current membership, permissions and hierarchy before persisting intent. |
+| `dispatch`, `recordOutcome`, `reconcile`, `recoverDueActions` | [ActionExecutionService](src/contexts/moderation/action-execution.service.ts) shares the existing target gate, durable attempt, outcome recording and bounded recovery across warnings, bans, unbans and kicks. `recordOutcome` is private so callers cannot manufacture transport evidence. |
+| `kickMember` | [DiscordModerationTransport.execute](src/discord/moderation-transport.ts) sends the exact recorded kick once. Recovery requires matching `MEMBER_KICK` audit evidence; a departed target alone does not establish success. Status authorization remains read-only and works after departure. |
+| `proposePlan`, `approvePlan`, `consumeApproval`, `enrollCustodian` | [GovernanceService](src/contexts/administration/governance.service.ts) owns immutable scoped proposals, distinct current custodian approvals, one-time transaction-bound consumption and independently authenticated candidate acceptance. |
+| `applyApprovedPlan` | [ApprovedPlanHandlers](apps/bot/approved-plan.handlers.ts) applies the fixed capability-grant/revocation vocabulary through existing AuthorityService methods in the same transaction as plan consumption. An owner rejection rolls back all operations, consumption and audit. |
+| `storeBounded`, `openAuthorized`, `deleteExpired` | [ArtifactStore](src/platform/artifacts/artifact.store.ts) persists ownership before capture/upload, verifies bytes/type/hash, checks current disclosure authority and retains retryable cleanup through the late-upload horizon. |
+| `embedTexts` | [EmbeddingService](src/ai/embeddings/embedding.service.ts) performs one bounded OpenRouter embedding request, or explicit deterministic fake execution, and returns vectors bound to exact input references/hashes and model/dimensions. |
+
+Governance is explicitly constructed with a revisioned quorum/lifetime/retention policy and requires the existing staged tables. The current owner proposes/applies plans; approvers need an explicit guild-wide `governance.custodian` grant and fresh native administrator membership. Requesters and grant recipients cannot approve their own plans. Consumption rechecks policy, expiry, original proposer authority and every contributing approver's grant revision. Initial custodians still need a separately reviewed provisioning path; ordinary owner grant commands do not issue the special capability. Enrollment follows invite → candidate acceptance → approved completion; generic plan application cannot skip candidate consent. Supported plan operations are exact capability grants and revocations, not arbitrary feature calls or executable payloads.
+
+Artifact flow is durable record → bounded capture/type/hash verification → current owner authorization and upload claim → external upload → conditional publication. Reads check exact purpose/audience/revision and owner or Jobs release authority before and after bounded storage I/O. Cleanup commits unavailability before deletion and only confirms deletion after a delete begun beyond the upload horizon. A deployment must supply a storage adapter, byte-based MIME verifier and transaction-local owner authorization callback. The storage backend must enforce the write cutoff even if an uploader crashes; a client-side timeout cannot guarantee that late bytes will never appear. There is no default vendor, bucket, public media route or image-assessment workflow.
+
+Embedding input is versioned and bounded to sixteen texts, 8 KiB each and 64 KiB total, with 1–4096 explicitly requested dimensions. The adapter snapshots input, rejects mismatched hashes, duplicate references, missing/duplicate indexes, nonfinite coordinates, wrong dimensions/models and invalid usage. Response reads are capped at 2 MiB and share one cancellation/deadline boundary with the request. It never retries automatically; failed dispatched calls retain possible spend, and missing usage remains unknown. No credentials or source text enter error diagnostics. Worker admission, reservations, result acceptance, vector persistence and semantic retrieval remain owner integration work; this adapter does not activate them.
+
+Verification lives in `tests/integration/moderation-actions.postgres.test.ts`, `tests/integration/governance.postgres.test.ts`, `tests/integration/artifacts.postgres.test.ts`, `tests/administration/governance-dto.test.ts`, `tests/discord/moderation-transport.test.ts` and `tests/ai/embedding.service.test.ts`. These exercise component behavior using fake external boundaries and isolated PostgreSQL, not live Discord or provider quality.
+
+Contract references: [Discord member removal](https://docs.discord.com/developers/resources/guild#remove-guild-member), [Discord audit logs](https://docs.discord.com/developers/resources/audit-log), [PostgreSQL locking](https://www.postgresql.org/docs/current/explicit-locking.html), [MikroORM transactions](https://mikro-orm.io/docs/transactions), [Node streams](https://nodejs.org/docs/latest-v24.x/api/webstreams.html), and [OpenRouter embedding requests](https://openrouter.ai/docs/api/api-reference/embeddings/submit-an-embedding-request).
+
+## Default policy and member controls
+
+[config/yuna.example.json](config/yuna.example.json) provides four text rules covering harassment, threats, privacy violations and scams, with quotation/reporting/educational/fictional-context exclusions. Established violations map to a warning; suspicion maps to no action. Original body and established author are required. Model uncertainty, low confidence, missing evidence and unsupported attribution cannot become punishment.
+
+The starter allows 1,000 server provider attempts and ten member-requested attempts per UTC day. [config/yuna.budgeted.example.json](config/yuna.budgeted.example.json) adds USD 5.00 per server and USD 0.50 per member. Prices are deliberately empty: monetary caps block calls until an operator supplies verified, versioned prices and sufficient conservative token bounds. These are editable sample limits, not model-price claims or guarantees about an external provider's bill.
+
+`env:REPLY_MODEL` and `env:JEV_MODEL` are the only environment selectors accepted inside policy files. They resolve to explicit model IDs without reading arbitrary environment secrets. A policy file is bounded, validated and frozen; `/yuna configure` authorizes its persisted revision. Optional features cannot be approved when their composition dependency is absent. Unconfigured installations retain the compatibility baseline: Community only, twenty guild attempts, no automatic moderation or currency budget.
+
+Members can inspect `/yuna usage`, lower their allowance with `/yuna limit`, and return to server defaults with `/yuna limit-clear`. Personal preferences never raise server limits. Conversation requests and Debate initiation count against the authenticated requester's allowance; automatic moderation counts against the guild allowance. Paired scoring creates two provider attempts. Settings persist across an installation generation change until explicitly cleared or removed. A currency mismatch is reported and blocks claims; an old cap is never relabeled as a different currency.
+
+Every claim reserves before provider dispatch under shared guild/day locks. Attempt counts do not refund; known unused monetary capacity can be released, but ambiguous provider spend remains reserved. Late usage may settle the admitted price once without reviving a stale task or effect. Unknown or unpriced spend is displayed as unknown rather than zero.
+
+## Data flows and ownership
+
+### Conversation and approved knowledge
 
 ```text
-Discord Gateway human mention/reply in allowed server
-  -> transport normalization + verified reply author
-  -> installation/safety gate + channel settings
-  -> transaction: immutable source observation + Community receipt
-       + ConversationRequest + AiTask/PreparedInput + outbox
-  -> worker claims compatible task + reserves one daily attempt
-  -> separately recheck/release prepared input + record provider start
-  -> DeepSeek direct API or deterministic fake (outside transaction)
-  -> transaction: immutable result + usage + completion outbox
-  -> Community checks current source/safety/settings/deadline
-       + copies accepted text to ReplyDelivery + acknowledges result
-  -> fresh Discord source/permissions + locked delivery claim
-  -> one Discord send outside transaction, with nonce and no pings
-  -> store delivered / definitive failure / unknown
-  -> reconcile unknown only from matching Discord evidence
+Human mention/reply → transport-normalized identity and source
+ → installation/safety/channel gate → durable intake and request
+ → approved visible knowledge + bounded input → community.generate
+ → restricted claim → input release → provider-start gate → DeepSeek
+ → durable result → owner current-binding acceptance + reply intent
+ → fresh source/permissions → one Discord send → known/unknown outcome
 ```
 
-Only Community receives intake in this slice. The stored text is normalized conversational input, not a claim of original moderation evidence. Future moderation intake must independently capture attributable original content and retain its own evidence; filtering conversations must not suppress moderation.
+Only approved content visible in the source channel enters a prompt. Source text, previous reply and knowledge share the 6,000-character input bound. Exact entry IDs, revisions, hashes, audience and expiry are rechecked at worker release/start, result acceptance and dispatch. Edits/deletions cancel current-source work without regenerating or recalling an already sent reply. Retrieval is lexical, bounded and deterministic; it does not promise semantic matching.
 
-## Operating limits and recovery
+### Moderation
 
-| Choice | Pilot behavior |
+```text
+Authentic MESSAGE_CREATE → canonical case and retained original evidence
+ → moderation.observe → exact supported original quotes
+ → one moderation.assess per enabled rule → bound findings
+ → strongest explicitly configured operation → durable action intent
+ → target execution gate + current authority/native facts
+ → warning/ban/unban transport → observed outcome/reconciliation
+```
+
+Moderation does not require a mention. A report references a captured original; reporter allegations and current REST fetches cannot manufacture missing original evidence. Later edits/deletions do not replace retained evidence. One observation feeds sequential rule assessments. Only findings supporting the exact selected effect and deletion scope authorize that effect. Intent, accepted finding/result and execution or cancellation are transactionally audited with references, without copied message text.
+
+Staff requests name the exact target and operation and require both current native permission and scoped Yuna capability. Unban additionally requires an explicit request from a current Discord administrator. Automatic actions use accepted policy/evidence/finding bindings. Unknown effects block conflicting target actions across installation generations and are never treated as failed merely because a lease expired. Warning failure or repetition is not evidence for a ban.
+
+### Private memory
+
+```text
+Member consent → member-submitted bounded fact → private scope
+ → same-member inspection/search → withdrawal/forget/expiry
+ → immediate disclosure fence → bounded payload/metadata deletion
+```
+
+Memory uses authenticated member identity, installation scope and explicit submissions. It does not infer facts from messages, use a provider, create embeddings or copy memory into public replies. Withdrawal and forgetting remain available while ordinary admission is paused or the feature is disabled. Cleanup never relies on an active feature gate to honor privacy requests.
+
+### Structured debates
+
+```text
+Proposal with rubric, audience, payer, model and retention
+ → each participant reviews full private scope attachment and consents to its hash
+ → start → explicit self-authored submissions → frozen snapshot/rubric
+ → debates.assess (and optional speaker-reversed assessment)
+ → owner validates sufficiency/confidence/bindings and calculates exact totals
+ → current consent/safety/channel checks → one public result publication
+```
+
+Only the two invited participants can inspect and act on their session. Channel history is not collected. Scores come from typed rubric answers; weights and totals use deterministic decimal arithmetic. Insufficient, fake, low-confidence or inconsistent paired assessments remain inconclusive. Results confer no authority or moderation consequences. Lifecycle and publication audits retain bounded references without private transcript or score copies. Consent withdrawal cancels pending work and erases retained payloads; it cannot recall a publication already sent. Unknown publication outcomes require exact bot/channel/nonce/hash evidence and are never blindly resent.
+
+## Function and navigation index
+
+Use `/yuna channel-status` to read the exact mode and revision before changing a channel. Methods below are the main entry points. Private helpers and entity transitions have local comments explaining narrower validation, locking and retention responsibilities.
+
+| File / entry points | Purpose and reason to exist |
 | --- | --- |
-| Trigger and scope | Mention/reply; one required server ID; all accessible channels; human messages only. |
-| Context | Current text ≤4,000 characters plus replied-to Yuna text ≤2,000. No archive or personal memory. |
-| Reply | 512 output tokens, ≤2,000 characters, no mention notifications. |
-| Deadline | Two minutes from message creation; 30-second provider ceiling by default, additionally bounded by lease/deadline. |
-| Load/cost | ≤20 pending requests; ≤20 claims per UTC day/server including fake/failure. A call-count cap, not a dollar budget. |
-| Retry | One provider attempt and one Discord send; ambiguous outcomes never automatically resend. |
-| Retention | Payloads expire after 24 hours; running bot purges bounded batches. Technical IDs/hashes/usage/deduplication metadata remain. |
-| Availability | Gateway gaps and restarts advance safety revision; old claims cannot disclose/dispatch, pending replies are canceled. |
+| [runtime-config.ts](src/platform/config/runtime-config.ts): `loadBotConfig`, `loadWorkerConfig`, `loadHealthConfig` | Validate immutable role-specific settings without reading unrelated credentials or opening I/O. |
+| [policy-config.ts](src/platform/config/policy-config.ts): `loadPolicyConfig`, `validatePolicyConfig` | Bound and validate an editable model-independent policy before an authorized owner approves it. |
+| [migrate.ts](src/platform/db/migrations/migrate.ts): `prepareDatabase` | Explicit administrator transaction for checksummed upgrades, role restrictions and exact allowed grants. Runtime startup never applies DDL. |
+| [db.module.ts](src/platform/db/db.module.ts): `createDatabaseResource` | Lazily acquire, probe, expose and close an ORM connection. Workers discover no business entities. |
+| [application.ts](src/platform/runtime/application.ts), [process.ts](src/platform/runtime/process.ts): `startApplication`, `runApplicationProcess` | Ordered startup, cancellation, reverse cleanup, sanitized fatal errors and a bounded process exit. |
+| [bot-ownership.ts](src/platform/runtime/bot-ownership.ts): `createBotOwnership` | Dedicated PostgreSQL session lock prevents simultaneous bot owners and triggers shutdown on ownership loss. |
+| [bot.module.ts](apps/bot/bot.module.ts): `createBotResources` | Composition root wires feature owners, Gateway callbacks, results, maintenance, privacy cleanup and removal acknowledgments. |
+| [ai-worker.module.ts](apps/ai-worker/ai-worker.module.ts): `createWorkerResources` | One shared lane limit rotates through conversation, moderation observation/assessment and Debate assessment. |
+| [discord.module.ts](src/discord/discord.module.ts): `DiscordGateway` | Own SDK lifecycle and external reads/effects; normalize identity, privately acknowledge commands and suppress mentions. |
+| [input-normalizer.ts](src/discord/input-normalizer.ts) and command modules | Validate and copy transport primitives. Commands never supply trusted actor identity through options. |
+| [register-discord-commands.ts](apps/admin/register-discord-commands.ts) | Explicit CLI upserts only the guild's Yuna command, preserving unrelated commands. |
+| [guild-lifecycle.service.ts](src/contexts/administration/guild-lifecycle.service.ts): `registerGuild`, `lockAdmission`, `lockFeatureAdmission`, `lockPrivacy`, `recordAvailability` | Own installation/safety order, availability fencing and privacy access independent of ordinary feature admission. |
+| [authority.service.ts](src/contexts/administration/authority.service.ts): `bootstrapOwner`, `grantCapability`, `revokeGrant` | Verify current native facts, enroll scoped authority and prevent stale grants from authorizing work. |
+| [configuration.service.ts](src/contexts/administration/configuration.service.ts), [safety.service.ts](src/contexts/administration/safety.service.ts) | Persist approved configuration and pause/resume revisions with affected-work invalidation and audit. |
+| [removal.service.ts](src/contexts/administration/removal.service.ts): `beginRemoval`, `runCleanup` | Fence first, resume bounded owner cleanup and retain honest completion/retained dispositions before reinstall. |
+| [intake.service.ts](src/platform/intake/intake.service.ts) | Deduplicate ingress, retain original/current-source provenance and erase payloads without silently restoring expired originals. |
+| [conversation.service.ts](src/contexts/community/conversation.service.ts), [reply-delivery.service.ts](src/contexts/community/reply-delivery.service.ts) | Own conversation admission, acceptance, cancellation, one-attempt delivery, reconciliation and cleanup. |
+| [knowledge.service.ts](src/contexts/community/knowledge.service.ts) | Authorize approval/retirement and return only bounded visible, current knowledge with exact provenance. |
+| [moderation.service.ts](src/contexts/moderation/moderation.service.ts) | Own original-message/report cases, immutable policy publication, evidence retention and removal. |
+| [moderation-workflow.service.ts](src/contexts/moderation/moderation-workflow.service.ts): `admitCase`, `acceptResult`, `runMaintenance` | Register observation/assessment stages and accept exact current findings/actions in the acknowledgment transaction. |
+| [moderation.policy.ts](src/contexts/moderation/moderation.policy.ts) | Pure evidence/exclusion/threshold policy; separates supported conduct from uncertain model output. |
+| [staff-moderation.service.ts](src/contexts/moderation/staff-moderation.service.ts), [action-execution.service.ts](src/contexts/moderation/action-execution.service.ts) | Explicit staff admission and shared target dispatch/reconciliation with current authority and native facts. |
+| [memory.service.ts](src/contexts/memory/memory.service.ts) | Member consent, explicit facts, private retrieval and deletion with no provider or public-copy path. |
+| [debate.service.ts](src/contexts/debates/debate.service.ts), [debate-scoring.policy.ts](src/contexts/debates/debate-scoring.policy.ts), [debate-publication.service.ts](src/contexts/debates/debate-publication.service.ts) | Consent-bound snapshots, typed assessments, deterministic scoring and once-attempted publication/cleanup. |
+| [task.service.ts](src/platform/jobs/task.service.ts), moderation/debate task services | Register reciprocal durable task/input records, expose bound completions, recover attempts and acknowledge owner disposition. |
+| Worker stores and [SQL migrations](src/platform/db/migrations/README.md) | Parameterized claim/release/start/finish functions enforce exact lease, scope, deadline, budget and owner binding without direct worker table access. |
+| [task.handlers.ts](apps/ai-worker/task.handlers.ts), moderation/debate handlers | Claim → disclosure → start record → one provider call → durable completion. Saving errors never trigger a second provider request. |
+| [llm.service.ts](src/ai/llm/llm.service.ts), [jev.service.ts](src/ai/jev/jev.service.ts) | Fixed provider protocol, bounded body/deadline, strict typed results and safe errors; preserve usage without granting business authority. |
+| [user-usage.service.ts](src/platform/usage/user-usage.service.ts), [usage.service.ts](src/platform/usage/usage.service.ts) | Member-owned lower limits, exact spend/status and safe accounting cleanup. Claims/settlement reuse admitted SQL accounting. |
+| [audit.recorder.ts](src/platform/audit/audit.recorder.ts): `recordTransition`, `recordControlChange`, `purgeExpired` | Idempotent transactional references and explicit audit lifetime without prompt/response payload copies. |
+| [task-wakeup.ts](src/platform/jobs/task-wakeup.ts), [background-loop.ts](src/platform/runtime/background-loop.ts) | Reconnectable empty notification hints plus durable scans; separate fresh work from slower recovery. |
+| [latency.ts](src/platform/runtime/latency.ts), [health.ts](src/platform/runtime/health.ts), [health CLI](apps/bot/health.ts) | Content-free committed timings and read-only readiness/backlog inspection without provider credentials. |
 
-Model request and resolved response IDs are recorded separately: providers may return a resolved version of a requested alias. No invented dollar prices are stored; unpriced usage remains an explicitly estimated liability. Daily attempt reservations do not refund on failure or restart. No external I/O runs while a database transaction is held.
+Reuse existing validators, pure policy, entity transitions, owner transactions, task stores and the temporary PostgreSQL helper before adding another abstraction. File headers describe purpose; method comments explain intent and invariants. Standard JSON has adjacent documentation instead of invalid inline comments. Historical migrations retain their original checksums; migration descriptions live beside them.
 
-A message edit/delete invalidates current-source work and cancels an unsent reply. It does not regenerate automatically or recall an already sent response. A crash between recording dispatch and observing Discord's answer remains uncertain; positive reconciliation requires the bot author, source reference, nonce and content hash. Unknown sends have a separate bounded rotating scan so they cannot starve new replies.
+## Concurrency, cleanup and operating limits
 
-## Reviewable code groups and function index
+Each callback/job uses a fresh ORM fork. Shared owner mutations serialize through installation → safety → relevant source/workflow rows. Claims additionally serialize shared guild/day attempt and money accounting. Exact target gates serialize moderation effects across installations. Database uniqueness prevents duplicate receipts, attempts and acceptance. Scoped foreign keys and private security-definer helpers independently validate worker authority.
 
-| Code / methods | Purpose and transaction contract |
-| --- | --- |
-| [Runtime configuration](src/platform/config/runtime-config.ts): `loadBotConfig`, `loadWorkerConfig` and private field readers | Validate/freeze only each role's settings, with safe field-only errors and no I/O. Require guild/model for live Discord; live Jev is rejected at composition for this milestone. |
-| [Database setup](src/platform/db/migrations/migrate.ts): `prepareDatabase`, private configuration/role/privilege checks | Explicit admin operation on an existing owned database. Advisory lock, checksum ledger, versioned SQL, role passwords and restricted grants commit atomically. Runtime roles own no tables. |
-| [Database resource](src/platform/db/db.module.ts): `createDatabaseResource`, `start`, `getOrm`, `stop` | Lazily own/probe a connection, expose it only while ready, close safely. Bot uses core metadata; worker metadata stays empty. No startup DDL. |
-| [Lifecycle](src/platform/runtime/application.ts): `startApplication`, `shutdown`, `createFakeResource` | Ordered startup, reverse rollback/shutdown, shared cancellation. Fake Discord is lifecycle-only; use live Discord plus fake DeepSeek for an actual server test. |
-| [CLI lifecycle](src/platform/runtime/process.ts): `runApplicationProcess` | Own SIGINT/SIGTERM listeners and ten-second shutdown limit; log safe status without secrets. |
-| [Bot composition](apps/bot/bot.module.ts): `createBotResources` | Connect database → Gateway → Community, serialize availability transitions, poll recovery/acceptance/delivery/cleanup; drain before closing database. |
-| [Worker composition](apps/ai-worker/ai-worker.module.ts): `createWorkerResources` | Verify restricted claim capability, start bounded consumer lanes, abort and drain them before closing database. |
-| [Discord normalization](src/discord/input-normalizer.ts): `normalizeConversationMessage`, `hashMessageSource`, `hashDiscordContent` | Normalize trigger/context without business entities; source hashing detects edits. Verify referenced Yuna authors, ignore system/bot/webhook/DM/wrong-server messages. |
-| [Discord adapter](src/discord/discord.module.ts): `DiscordGateway.start/stop`, `readSource`, `sendReply`, `findReply` | SDK lifecycle, cancellation and read/effect boundary. Fresh source reads, cached SDK permission checks, Discord final enforcement, no automatic retries, conservative unknown outcomes. |
-| [Guild lifecycle](src/contexts/administration/guild-lifecycle.service.ts): `registerGuild`, `lockAdmission`, `recordAvailability` | Own scoped installation/safety locks; preserve identity, enforce pause/availability, fence old work after connection gaps. New install enables Community only. |
-| [Intake](src/platform/intake/intake.service.ts): `receiveInput`, `invalidate`, `current`, `purgeExpired` | Join owner's transaction; deduplicate source, retain observation, create unresolved tombstones for late events, check current source and erase expired payload. |
-| [Conversation](src/contexts/community/conversation.service.ts): `receiveInput`, `cancelRequest`, `cancelPending`, `acceptReplyResults`, `runRetention` | Own request admission/cancellation, accepted text and reply intent; each operation owns a short transaction. Acknowledge task result with acceptance/discard in the same commit. |
-| [Jobs owner](src/platform/jobs/task.service.ts): `registerTask`, `recoverExpired`, `pendingResults`, `acknowledge`, `isResultCurrent`, `invalidateSource`, `purgeExpired` | Register reciprocal task/input records in caller transaction, recover leases, expose narrow completion/current-result facts, retain acknowledgment and erase payloads. |
-| [Worker store](src/platform/jobs/worker-task.store.ts): `claimNext`, `releasePreparedInput`, `recordProviderStart`, `recordResult` | Parameterized calls to restricted database functions. Claims expose authority metadata; only the separate release gate discloses prepared text. No direct table access. |
-| [Worker SQL](src/platform/db/migrations/conversation-worker.sql): claim/release/start/finish/recover functions and internal gates | Lock installation/safety/source/request/task, enforce exact binding/lease/deadline, reserve daily usage and immutable results. Security-definer functions use a fixed trusted search path; public schema creation is revoked. |
-| [Usage helper](src/platform/usage/conversation-usage.ts): `createConversationUsagePolicy` | Create the explicit server-test daily-attempt policy using existing usage entities; no fictitious model pricing. |
-| [Task handler](apps/ai-worker/task.handlers.ts): `AiTaskHandlers.runOne` | Claim → disclosure → provider-start gate → one LLM call → persistence. Recheck time after storage gates; uncertain cost survives errors. Never retry a call because saving its result failed. |
-| [LLM](src/ai/llm/llm.service.ts): `LlmService.generateReply`, safe `LlmError` and private validators | Fixed direct endpoint, bounded input/body/deadline, strict output/usage validation, whole-grapheme truncation and deterministic fake. No tools, hidden reasoning or raw provider errors returned. |
-| [Reply delivery](src/contexts/community/reply-delivery.service.ts): `recoverDueDeliveries`, `dispatch`, `reconcile` | Fresh external source read, locked current safety/result/source/settings check, durable one-attempt claim, external send, stored outcome. Exact evidence resolves uncertainty without resending. |
+Provider and Discord I/O happen outside database transactions. A committed dispatch is the local boundary: revocation before it can prevent an effect; revocation afterward cannot unsend a remote request. Unknown outcomes remain explicit. There is no exactly-once remote-effect guarantee.
 
-Reuse `entityOrmConfig`, combined schema generators, base record/scoped entities, existing transition methods, `invariant`, ID/date/number validators and `copyJson`. These validate local values/state; services supply current authority and transaction locks. Reuse [temporaryPostgres](tests/helpers/temporary-postgres.ts) for actual role/constraint/race tests. The [Jest clone compatibility shim](tests/setup/structured-clone.ts) is test-only and preserves the production JSON checks.
+Notifications carry no content or authority. Listeners establish LISTEN before scanning and latch revisions before waiting; missed notifications are recovered through polling. Worker lanes share one configured bound instead of multiplying concurrency per feature. Shutdown cancels external calls, drains local work and closes sessions within the process deadline.
 
-## Concurrency and verification
+Retention separates payload lifetime, metadata lifetime and accounting lifetime. Eligible terminal conversation and Debate graphs can be deleted together; active work and unknown charges/effects remain. Moderation and knowledge preserve minimal replay/provenance references where needed. Guild removal first closes admission, then records each owner's complete/retained disposition; it does not claim unresolved references were erased. Backups require their own privacy/retention controls.
 
-Every event/job/batch gets a fresh ORM fork. Mutations sharing the installation serialize on its row; safety and source gates are locked before disclosure/acceptance. Database uniqueness handles duplicate intake, task attempts and result acceptance. SQL functions independently revalidate claims and preserve terminal results against late workers. Gateway availability callbacks are serialized so stale reconnect work cannot overtake a new outage.
+Health reports current installation/safety/availability and the live ownership lock. It does not prove provider reachability or that an idle worker is alive. Supervisor templates, log rotation guidance and the backup/restore procedure are in [OPERATIONS.md](docs/OPERATIONS.md). Nothing is installed by building the repository.
 
-On 21 October 2026, `npm run test:all` built successfully and passed **161 tests across 19 suites**, including 35 PostgreSQL integration checks. `git diff --check` passed. `npm audit --omit=dev` reported zero production vulnerabilities; development tooling still reports moderate advisories and has not been force-downgraded.
+## Verification and remaining acceptance
 
-The [test guide](tests/README.md) maps configuration, lifecycle/subprocess, Discord, LLM, handler, migration, worker-permission and full conversation-flow checks. Tests use explicit Jest imports and compiled ESM, real PostgreSQL and mocked external boundaries. No live Discord round trip or provider billing test has been performed. The [manual test guide](docs/LOCAL_TEST.md) is the next acceptance step.
+On 28 October 2026, `npm run test:all` passed all 60 suites and 589 tests after the optional component methods were added. The TypeScript build, `npm run check:docs` and `git diff --check` also passed. This includes real isolated PostgreSQL governance, kick and artifact integration tests alongside the existing feature suites. Run `npm run test:coverage` when a fresh coverage report is needed; no new coverage percentage is claimed for this change. PostgreSQL integration tests must run serially and need local server binaries and permission to create and clean up temporary shared memory. The test helper uses isolated disposable databases; it does not migrate the user's running database.
 
-Keep tasks reviewable, document new public behavior, test actual failure/race cases, and use current official sources for external contracts. Do not weaken existing schema constraints to make the worker run. General administration/moderation rules remain in [the architecture](docs/ARCHITECTURE_PLAN.md), [entity reference](docs/DATA_MODEL_REFERENCE.md) and [DTO reference](docs/DTO_REFERENCE.md).
+The suite covers exact role grants and nine-step upgrades, real-lock concurrency, rollback, source/policy/safety invalidation, unknown effects/costs, consent/withdrawal/deletion, quotas and currency changes, subprocess lifecycle, private transport attachments, and dependency boundaries. The operations suite performs a real isolated dump/restore and a bounded thirty-input fake load with twenty admitted tasks, four worker lanes and twenty unique replies. Those finite measurements do not establish production capacity.
 
-## Provider research and integration decisions
+Live Discord/provider acceptance, operational installation, real model-quality review and sustained deployment load remain unperformed. The operator guide specifies those checks. Price examples require verified operator-supplied rates. No live command registration, provider charge, production database change, commit or push was performed.
 
-Checked against official documentation on 21 October 2026. Model availability can change; no live model calls were made during implementation.
+## Primary references used
 
-- **DeepSeek direct:** the documented chat endpoint is `https://api.deepseek.com/chat/completions`. Keep the exact model ID, response limits and thinking configuration in validated runtime configuration. The test guide selects the current documented `deepseek-flash` model with thinking disabled; the model remains configurable. [DeepSeek API introduction](https://api-docs.deepseek.com/).
-- **Jev model selection:** `typesafe/jev-1.14` is the pinned OpenRouter decision-model ID verified on 21 October 2026. `JEV_MODE` remains disabled until the adapter and its first code-owned decision are implemented. [OpenRouter model listing](https://openrouter.ai/typesafe/jev-1.14).
-- **Jev through OpenRouter:** OpenRouter documents the Decisions API at `https://openrouter.ai/api/alpha/decisions` for typed Jev assessments. This needs its own adapter contract rather than assuming a text-completion response. Keep the exact model version configurable and retain returned request ID, resolved model, provider and usage for accounting. [OpenRouter Jev guide](https://openrouter.ai/docs/guides/community/jev), [Decisions API](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request).
-- **Jev semantics:** Choice selects among defined labels; Score evaluates a rubric; Noul returns a 0–1 value for a proposition. Preserve each answer type's meaning and validate question IDs and bounds. Use these outputs for narrowly defined application decisions. [TypeSafe introduction](https://docs.typesafe.ai/introduction).
-- **Assessment contract constraint:** Jev does not return generated reasoning or explanations. Bind its answer to Yuna-supplied source references; do not fabricate citations or explanations to satisfy a scaffold field. Define an explicit uncertainty outcome for an inconclusive assessment. [OpenRouter Jev guide](https://openrouter.ai/docs/guides/community/jev).
-- **Discord replies:** use transport-provided mention IDs and verify the referenced author for reply triggers. A reply reference can be absent or explicitly deleted. Test replies with the mention toggle disabled and configure content access accordingly; inaccessible content is an explicit missing-input outcome. [Discord message reference](https://docs.discord.com/developers/resources/message).
-
-## Next work after the server test
-
-1. Observe mention/reply behavior, latency and failure handling on the user's server; refine the small conversation prompt/context if needed.
-2. Agree on Jev's first typed decision and uncertainty outcome, then implement its OpenRouter adapter with fixtures and recorded usage.
-3. Add operational controls, actual currency-budget policy/pricing and complete metadata retention before broader deployment.
-4. Implement moderation assessment/authority/enforcement as its own reviewed milestone; then consider knowledge, memory, debates and richer media.
-
-Automatic sanctions, autonomous channel participation, production load testing and full guild-removal cleanup are not enabled by this conversation milestone.
+- [PostgreSQL locking](https://www.postgresql.org/docs/current/explicit-locking.html), [exact numeric types](https://www.postgresql.org/docs/current/datatype-numeric.html), [LISTEN](https://www.postgresql.org/docs/current/sql-listen.html), [NOTIFY](https://www.postgresql.org/docs/current/sql-notify.html), [pg_locks](https://www.postgresql.org/docs/current/view-pg-locks.html): owner locks, decimal accounting and durable-notification recovery.
+- [MikroORM transactions](https://mikro-orm.io/docs/transactions), [node-postgres client](https://node-postgres.com/apis/client): transactional ownership and dedicated session lifecycle.
+- [Discord interactions](https://docs.discord.com/developers/interactions/receiving-and-responding), [commands](https://docs.discord.com/developers/interactions/application-commands), [permissions](https://docs.discord.com/developers/topics/permissions) and installed discord.js source: private replies, native authority and bounded effects.
+- [DeepSeek API](https://api-docs.deepseek.com/), [OpenRouter Decisions](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request), [Jev guide](https://openrouter.ai/docs/guides/community/jev), [Typesafe confidence](https://docs.typesafe.ai/confidence): protocol and typed uncertainty semantics. Model names remain configuration, not permanent availability promises.
+- [Jest configuration](https://jestjs.io/docs/configuration), [asynchronous tests](https://jestjs.io/docs/asynchronous), [setup-node](https://github.com/actions/setup-node): repeatable checks and coverage. No hosted CI result is claimed from a local workflow file.

@@ -1,3 +1,4 @@
+/** Keep moderation revision counters within PostgreSQL's integer range. */
 import { assertNonNegativeInteger, invariant } from '../../../platform/db/entity-values.js';
 
 /** PostgreSQL integer counters must fail before overflowing or losing an execution fence. */

@@ -2,7 +2,13 @@
  * Planned component: DiscordActions
  * Kind: Outbound effect adapter
  * Owner: Discord boundary
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: DiscordGateway, DiscordModerationTransport and DiscordDebateTransport implement current sends, warnings and ban/unban/kick effects.
+ * The planned kickMember method is the kick branch of DiscordModerationTransport.execute, with
+ * current membership/permission/hierarchy preparation and attempt-bound audit reconciliation.
+ * Kick command registration and live admission remain a separate composition decision.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Execute exact operations already authorized and recorded by their feature owner.

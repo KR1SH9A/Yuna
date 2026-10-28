@@ -2,7 +2,10 @@
  * Planned component: CommunityContracts
  * Kind: Narrow context bindings
  * Owner: Community
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Current Community boundaries are defined in generation/conversation task contracts, knowledge DTOs and Discord plain-data contracts. This wider catalog is a design reference.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility: Keep audience/provenance bindings separate from public use-case arguments and
  * results.

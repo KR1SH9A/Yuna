@@ -1,3 +1,4 @@
+/** Apply reviewed versioned SQL as an administrator and verify the restricted bot and worker privileges. */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { MikroORM, type EntityManager } from '@mikro-orm/postgresql';
@@ -16,6 +17,7 @@ type PreparationErrorCode = 'invalid_configuration' | 'unsafe_administrator' | '
 
 /** Do not retain driver errors: SQL, connection strings and role passwords can appear in them. */
 export class DatabasePreparationError extends Error {
+  /** Report only an allowlisted preparation error code, keeping driver details and credentials private. */
   constructor(readonly code: PreparationErrorCode) {
     super(`Database preparation failed (${code})`);
     this.name = 'DatabasePreparationError';
@@ -23,7 +25,9 @@ export class DatabasePreparationError extends Error {
 }
 
 const roles = ['yuna_bot', 'yuna_worker'] as const;
-const enabledTables = ['guild_installation', 'guild_safety_state', 'usage_policy', 'channel_reply_settings',
+const enabledTables = ['guild_installation', 'guild_safety_state', 'capability_grant', 'audit_entry', 'usage_policy', 'user_usage_limit', 'channel_reply_settings', 'knowledge_entry',
+  'memory_scope', 'memory_fact', 'memory_deletion_request', 'debate_session', 'participant_consent', 'transcript_entry', 'transcript_snapshot', 'rubric_revision', 'debate_evaluation',
+  'moderation_case', 'moderation_policy_revision', 'evidence_revision', 'moderation_finding', 'moderation_action', 'moderation_action_finding', 'action_attempt', 'target_execution_state',
   'intake_event', 'intake_delivery', 'conversation_request', 'reply_delivery', 'ai_task', 'prepared_input',
   'task_attempt', 'task_result', 'task_acceptance', 'outbox_entry', 'usage_reservation', 'usage_entry'];
 
@@ -98,6 +102,25 @@ async function verifyRuntimePrivileges(em: EntityManager, administrator: string,
     ['public.yuna_conversation_start(uuid,uuid,integer,text)', false, true],
     ['public.yuna_conversation_finish(uuid,uuid,integer,text,jsonb)', false, true],
     ['public.yuna_conversation_recover(integer)', true, false],
+    ['public.yuna_notify_tasks_ready()', false, false],
+    ['public.yuna_notify_results_ready()', false, false],
+    ['public.yuna_validate_snapshot_entries()', false, false],
+    ['public.yuna_validate_evaluation_retention()', false, false],
+    ['public.yuna_debate_gate(uuid)', false, false],
+    ['public.yuna_debate_claim(text,text)', false, true],
+    ['public.yuna_debate_release(uuid,uuid,integer,text)', false, true],
+    ['public.yuna_debate_start(uuid,uuid,integer,text)', false, true],
+    ['public.yuna_debate_finish(uuid,uuid,integer,text,jsonb)', false, true],
+    ['public.yuna_debate_recover(integer)', true, false],
+    ['public.yuna_knowledge_context_current(uuid)', false, false],
+    ['public.yuna_usage_task_user(uuid)', false, false],
+    ['public.yuna_usage_user_gate(uuid,numeric,text,boolean)', false, false],
+    ['public.yuna_moderation_gate(uuid)', false, false],
+    ['public.yuna_moderation_claim(text,text,text)', false, true],
+    ['public.yuna_moderation_release(uuid,uuid,integer,text)', false, true],
+    ['public.yuna_moderation_start(uuid,uuid,integer,text)', false, true],
+    ['public.yuna_moderation_finish(uuid,uuid,integer,text,jsonb)', false, true],
+    ['public.yuna_moderation_recover(integer)', true, false],
   ];
   for (const [identity, bot, worker] of functions) {
     const rows = await em.execute<{ owner: string; bot: boolean; worker: boolean }[]>(`select pg_catalog.pg_get_userbyid(p.proowner) as owner,
@@ -111,14 +134,14 @@ async function verifyRuntimePrivileges(em: EntityManager, administrator: string,
 
 /**
  * Explicit administrative operation only. An advisory lock serializes this database's setup;
- * role changes, both migrations, checksums and grants commit together or roll back together.
+ * role changes, migrations, checksums and grants commit together or roll back together.
  * Existing unrelated objects are untouched. PUBLIC CREATE on public is deliberately revoked.
  */
 export async function prepareDatabase(config: DatabasePreparationConfig): Promise<DatabasePreparationResult> {
   const url = validateConfiguration(config);
   let orm: MikroORM | undefined;
   try {
-    const names = ['001-core.sql', 'conversation-worker.sql'];
+    const names = ['001-core.sql', 'conversation-worker.sql', '003-conversation-notifications.sql', '004-operating-controls.sql', '005-moderation-worker.sql', '006-user-quotas.sql', '007-knowledge-context.sql', '008-memory.sql', '009-debates.sql'];
     const migrations = await Promise.all(names.map(async (name, index) => {
       const sql = await readMigration(name);
       return { version: index + 1, name, sql, checksum: createHash('sha256').update(sql).digest('hex') };
@@ -175,11 +198,11 @@ export async function prepareDatabase(config: DatabasePreparationConfig): Promis
       const ownership = await em.execute<{ name: string; owner: string }[]>(`select c.relname as name,
         pg_catalog.pg_get_userbyid(c.relowner) as owner from pg_catalog.pg_class c join pg_catalog.pg_namespace n
         on n.oid=c.relnamespace where n.nspname='public' and c.relkind='r'`);
-      for (const table of [...coreTables, 'yuna_schema_migrations']) {
+      for (const table of [...coreTables, 'user_usage_limit', 'memory_scope', 'memory_fact', 'memory_deletion_request', 'debate_session', 'participant_consent', 'transcript_entry', 'transcript_snapshot', 'rubric_revision', 'debate_evaluation', 'yuna_schema_migrations']) {
         if (ownership.find(row => row.name === table)?.owner !== selected.administrator) throw new DatabasePreparationError('unsafe_administrator');
         await em.execute(`revoke all on table public."${table}" from public,yuna_bot,yuna_worker`);
       }
-      for (const name of coreFunctions) await em.execute(`revoke all on function public.${name}() from public,yuna_bot,yuna_worker`);
+      for (const name of [...coreFunctions, 'yuna_validate_snapshot_entries', 'yuna_validate_evaluation_retention']) await em.execute(`revoke all on function public.${name}() from public,yuna_bot,yuna_worker`);
       await em.execute('grant usage on schema public to yuna_bot,yuna_worker');
       const databaseName = await em.execute<{ value: string }[]>('select pg_catalog.quote_ident(pg_catalog.current_database()) as value');
       await em.execute(`grant connect on database ${databaseName[0]!.value} to yuna_bot,yuna_worker`);

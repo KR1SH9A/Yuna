@@ -1,31 +1,24 @@
-/**
- * Planned component: DebateContracts
- * Kind: Plain boundary contract catalogue
- * Owner: Debates
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Describe trusted source bindings and internal/shared Debates values. Interaction requests and
- * public responses live in dto/debate-session.dto.ts and dto/debate-result.dto.ts; do not duplicate
- * them here. Planned plain boundary types:
- * TranscriptSourceInput: attributable source, author, order and revision/change markers.
- * FrozenEvaluationBinding: session, frozen transcript hash/revision, rubric revision and expected
- * task.
- *
- * Scope:
- * Staged until debate mode ships.
- *
- * Planned methods:
- * No business methods planned. These are conceptual data shapes, not runtime services,
- * declarations or implementations.
- *
- * Collaborators/Boundaries:
- * Plain internal values for trusted transcript intake and task completion. Interactive methods
- * consume Administration's transport-neutral TrustedCallerContext separately from DTO arguments;
- * Debates resolves current session/participant authority itself. Scoring values describe argument
- * evaluation only. Public response DTOs are projections, not accepted task results or authority.
- *
- * Invariants:
- * Never reuse a pruned conversation buffer as the declared transcript. No score or winner result
- * can grant capability or authorize a sanction.
- */
+/** Narrow Debate publication and frozen scoring values; adapters never receive ORM entities. */
+export interface DebateRubricInput {
+  readonly criteria: readonly { readonly id: string; readonly description: string; readonly levels: readonly string[]; readonly weight: string }[];
+  readonly minimumWinningMargin: string;
+  readonly minimumConfidence: number;
+  readonly paired: boolean;
+  readonly maximumPairDifference: number;
+}
+
+/** Consent covers explicit submitted text, the selected rubric and the named publication channel. */
+export interface DebatePublicationRequest {
+  readonly guildId: string; readonly channelId: string; readonly evaluationId: string;
+  readonly content: string; readonly nonce: string; readonly contentHash: string; readonly deadline: Date;
+}
+export type DebatePublicationOutcome = { readonly classification: 'confirmed'; readonly messageId: string }
+  | { readonly classification: 'rejected' | 'unknown'; readonly code: string };
+export interface DebatePublicationTransport {
+  /** Read current channel permissions before the owner commits its publication claim. */
+  prepare(input: { guildId: string; channelId: string }, signal: AbortSignal): Promise<{ allowed: boolean; observedAt: Date }>;
+  /** Send once with an empty allowed-mentions policy and the committed nonce. */
+  send(input: DebatePublicationRequest, signal: AbortSignal): Promise<DebatePublicationOutcome>;
+  /** Match channel, bot, nonce and content hash; absence remains uncertainty. */
+  reconcile(input: Omit<DebatePublicationRequest, 'content' | 'deadline'>, signal: AbortSignal): Promise<string | null>;
+}

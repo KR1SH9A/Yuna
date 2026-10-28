@@ -1,3 +1,4 @@
+/** Build the entity metadata configuration used by explicit schema preparation and the bot runtime. */
 import { defineConfig, PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { allEntities, coreEntities } from './entities.js';
 

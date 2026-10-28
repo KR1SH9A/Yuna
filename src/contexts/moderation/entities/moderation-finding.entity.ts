@@ -1,3 +1,4 @@
+/** Retain owner-accepted rule findings and their original-evidence explanations independently of Jobs payloads. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -47,6 +48,7 @@ export class ModerationFinding extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Copy a finding bound to an exact case, evidence revision, policy rule and accepted result. */
   constructor(input: ModerationFindingInput) {
     super(input);
     for (const value of [input.caseId, input.evidenceRevisionId, input.policyRevisionId, input.assessmentTaskResultId]) assertUuid(value);
@@ -73,6 +75,7 @@ export class ModerationFinding extends ScopedEntity {
     this.purgeAfter = new Date(input.purgeAfter);
   }
 
+  /** Erase explanation content at retention/removal while preserving its non-content disposition and identity. */
   purgePayload(at: Date, reason: string): void {
     assertDate(at, 'purgedAt');
     invariant(reason.length > 0 && reason.length <= 120, 'A bounded purge reason is required');

@@ -1,3 +1,4 @@
+/** Track the workflow for one authentic original message and its exact current evidence/policy bindings. */
 import { nextCounter } from './moderation-values.js';
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
@@ -42,6 +43,7 @@ export class ModerationCase extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
   @Property({ type: 'text', nullable: true }) captureReason: string | null = null;
 
+  /** Create one case for a fixed channel/message identity and the policy revision selected at admission. */
   constructor(input: ModerationCaseInput) {
     super(input);
     assertDiscordId(input.sourceChannelId);
@@ -73,12 +75,13 @@ export class ModerationCase extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Admit one next stage or sequential rule; the owner copies prior meaning and acknowledges its result atomically. */
   expectTask(input: ExpectedModerationTask): void {
     this.checkRevision(input.expectedRowRevision, input.at);
     assertUuid(input.taskId);
     invariant(this.currentEvidenceRevisionId === input.evidenceRevisionId && this.policyRevisionId === input.policyRevisionId, 'Task must bind current original evidence and policy');
     invariant(this.currentEvidenceRevisionId !== null, 'Missing original evidence cannot produce an assessment task');
-    invariant(input.phase === 'observing' || ['observing', 'captured'].includes(this.workflowPhase), 'Assessment requires captured or observed evidence');
+    invariant(input.phase === 'observing' || ['observing', 'captured', 'assessing'].includes(this.workflowPhase), 'Assessment requires captured or observed evidence');
     this.expectedTaskId = input.taskId;
     this.workflowPhase = input.phase;
     this.disposition = null;
@@ -104,6 +107,7 @@ export class ModerationCase extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Finish unsupported or unavailable evidence explicitly as incomplete without manufacturing an adverse finding. */
   recordDisposition(disposition: 'incomplete', reason: string, expectedRowRevision: number, at: Date): void {
     this.checkRevision(expectedRowRevision, at);
     invariant(reason.length > 0 && reason.length <= 120, 'Incomplete evidence requires a bounded reason');
@@ -128,11 +132,13 @@ export class ModerationCase extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Reject stale case revisions and out-of-order transition timestamps. */
   private checkRevision(expected: number, at: Date): void {
     assertNonNegativeInteger(expected, 'expectedRowRevision');
     assertDate(at, 'at');
     invariant(this.rowRevision === expected, 'Stale case revision');
     invariant(at >= this.updatedAt, 'Transition time cannot move backwards');
   }
+  /** Advance the case persistence revision and timestamp after a validated workflow change. */
   private touch(at: Date): void { this.rowRevision = nextCounter(this.rowRevision); this.updatedAt = new Date(at); }
 }

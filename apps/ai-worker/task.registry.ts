@@ -2,7 +2,10 @@
  * Planned component: Task registration lookup
  * Kind: Static composition data and lookup function
  * Owner: AI worker application
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: The active, explicit routes live in ai-worker.module.ts and its conversation, moderation and Debate handlers. A second generic registry is unnecessary.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Map supported stored task kinds and schema versions to known handlers.

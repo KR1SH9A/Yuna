@@ -1,3 +1,4 @@
+/** Verify entity constraints and cross-record invariants in a throwaway PostgreSQL database. */
 import assert from 'node:assert/strict';
 import { afterAll, beforeAll, test } from '@jest/globals';
 import { randomUUID } from 'node:crypto';
@@ -20,6 +21,7 @@ import { TaskAttempt } from '../../src/platform/jobs/entities/task-attempt.entit
 import { TaskResult } from '../../src/platform/jobs/entities/task-result.entity.js';
 import { UsageReservation } from '../../src/platform/usage/entities/usage-reservation.entity.js';
 
+/** Keep fixture timestamps deterministic while making relative state transitions easy to read. */
 const at = (seconds: number) => new Date(Date.parse('2026-10-15T10:00:00Z') + seconds * 1000);
 let database: ReturnType<typeof temporaryPostgres>;
 let orm: MikroORM;
@@ -35,6 +37,7 @@ afterAll(async () => {
   database?.close();
 }, 30_000);
 
+/** Create a fresh installation identity for this constraint test. */
 function installation(guildId = '900000000000000001') {
   return new GuildInstallation({ guildId, generation: 1, registeredAt: at(0), createdAt: at(0), featureAdmission: { moderation: 'enabled' } });
 }
@@ -98,9 +101,11 @@ test('default schema excludes staged features but keeps scoped core constraints'
   try {
     database.applySchema(await createEntitySchemaSql(core), 'yuna_core');
     const rows = await core.em.fork().execute<{ count: string }[]>("select count(*)::text as count from information_schema.tables where table_schema='public' and table_type='BASE TABLE'");
-    assert.equal(rows[0]?.count, '28');
-    const disabled = await core.em.fork().execute<{ count: string }[]>("select count(*)::text as count from pg_constraint where conname='prepared_input_privacy_scope_id_disabled'");
-    assert.equal(disabled[0]?.count, '1');
+    assert.equal(rows[0]?.count, '37');
+    const memoryBinding = await core.em.fork().execute<{ count: string }[]>("select count(*)::text as count from pg_constraint where conname='prepared_input_privacy_scope_id_scope_fk' and contype='f'");
+    assert.equal(memoryBinding[0]?.count, '1');
+    const staged = await core.em.fork().execute<{ count: string }[]>("select count(*)::text as count from information_schema.tables where table_schema='public' and table_name in ('action_plan','plan_approval','custodian_enrollment','fact_embedding')");
+    assert.equal(staged[0]?.count, '0');
   } finally { await core.close(true); }
 });
 

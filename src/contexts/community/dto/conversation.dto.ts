@@ -2,7 +2,10 @@
  * Planned component: Conversation use-case DTOs
  * Kind: Use-case input/output DTO catalogue
  * Owner: Community
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Current conversation admission uses NormalizedConversationMessage and bounded owner result types. The richer generic DTO below is a future extension.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility: Describe ordinary text-reply arguments, cancellation arguments and serialized
  * request progress independently of authenticated source metadata.

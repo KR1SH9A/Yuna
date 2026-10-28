@@ -1,3 +1,4 @@
+/** Persist one consumed Discord dispatch opportunity and later attributable response evidence. */
 import { nextCounter } from './moderation-values.js';
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
@@ -62,6 +63,7 @@ export class ActionAttempt extends ScopedEntity {
   @Property({ type: 'json', columnType: 'jsonb' }) reconciliationEvidence: ActionReconciliationEvidence[] = [];
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
 
+  /** Bind a single attempt to its action generation, exact endpoint, destination and request fingerprint. */
   constructor(input: ActionAttemptInput) {
     super(input);
     assertUuid(input.actionId);
@@ -89,6 +91,7 @@ export class ActionAttempt extends ScopedEntity {
     this.requestNonce = input.requestNonce ?? null;
   }
 
+  /** Mark the committed dispatch opportunity before I/O; this timestamp never proves application. */
   markSent(generation: number, at: Date): void {
     this.check(generation, at);
     invariant(this.finishedAt === null, 'Completed attempts cannot be sent again');
@@ -97,6 +100,7 @@ export class ActionAttempt extends ScopedEntity {
     this.rowRevision = nextCounter(this.rowRevision);
   }
 
+  /** Record the observed HTTP result once, keeping ambiguous transport outcomes explicit. */
   recordResponse(generation: number, response: ActionResponse, at: Date): void {
     this.check(generation, at);
     invariant(this.finishedAt === null, 'Record later observations as reconciliation evidence');
@@ -127,6 +131,7 @@ export class ActionAttempt extends ScopedEntity {
     this.rowRevision = nextCounter(this.rowRevision);
   }
 
+  /** Reject a stale execution generation or a timestamp before this attempt's known dispatch facts. */
   private check(generation: number, at: Date): void {
     assertDate(at, 'at');
     invariant(generation === this.dispatchGeneration, 'Stale attempt generation');

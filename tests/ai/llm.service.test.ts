@@ -1,3 +1,4 @@
+/** Exercise the chat adapter with controlled HTTP responses, cancellation, response bounds and safe error handling. */
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { inspect } from 'node:util';
@@ -19,6 +20,7 @@ function completion(content = ' Hello! ', finishReason = 'stop') {
   };
 }
 
+/** Build a provider-shaped JSON response with the selected status for the transport fixture. */
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
 }
@@ -80,7 +82,7 @@ test('live generation sends one bound non-thinking request and returns only vali
 test('fake generation reads no secrets, performs no fetch, and returns recognizable zero-usage output', async () => {
   const fake: ProviderConfig = { mode: 'fake' };
   for (const name of ['endpoint', 'apiKey', 'model']) {
-    Object.defineProperty(fake, name, { get() { throw new Error('fixture-secret-must-not-read'); } });
+    Object.defineProperty(fake, name, { /** Return the controlled response reader or property needed by the adapter test. */ get() { throw new Error('fixture-secret-must-not-read'); } });
   }
   const service = new LlmService(fake, 100, async () => { assert.fail('Fake mode must not fetch'); });
   const first = await service.generateReply(input);
@@ -94,6 +96,7 @@ test('fake generation reads no secrets, performs no fetch, and returns recogniza
 
 test('input validation rejects malformed or oversized values before any dispatch, including fake mode', async () => {
   let calls = 0;
+  /** Return a controlled provider response so this test never makes a network request. */
   const fakeFetch: typeof fetch = async () => { calls += 1; return jsonResponse(completion()); };
   const invalid: unknown[] = [null, undefined, [], {}, ...['', ' ', 'x'.repeat(4_001), 42].map((text) => ({ ...input, text })),
     ...['x'.repeat(2_001), null, 42].map((previousReply) => ({ ...input, previousReply })),
@@ -201,7 +204,7 @@ test('usage must be measured safe integers with consistent totals and supported 
 
 test('nonstream blank-line keepalives and UTF-8 split across chunks parse normally', async () => {
   const bytes = new TextEncoder().encode(`\n\n${JSON.stringify(completion('Hello 👋'))}\n`);
-  const stream = new ReadableStream<Uint8Array>({ start(controller) {
+  const stream = new ReadableStream<Uint8Array>({ /** Start the controlled response stream with this test's chosen chunks or stall. */ start(controller) {
     for (let index = 0; index < bytes.length; index += 2) controller.enqueue(bytes.slice(index, index + 2));
     controller.close();
   } });
@@ -214,10 +217,10 @@ test('body reads enforce the 64KiB byte ceiling and cancel oversized streams', a
   const exact = json.padEnd(64 * 1_024, ' ');
   assert.equal((await new LlmService(config, 1_000, async () => new Response(exact)).generateReply(input)).text, 'Hello!');
   let cancelled = false;
-  const stream = new ReadableStream<Uint8Array>({ start(controller) {
+  const stream = new ReadableStream<Uint8Array>({ /** Start the controlled response stream with this test's chosen chunks or stall. */ start(controller) {
     controller.enqueue(new Uint8Array(32 * 1_024));
     controller.enqueue(new Uint8Array(32 * 1_024 + 1));
-  }, cancel() { cancelled = true; } });
+  }, /** Observe response-stream cancellation so bounded reads and timeout cleanup can be asserted. */ cancel() { cancelled = true; } });
   await assert.rejects(new LlmService(config, 1_000, async () => new Response(stream)).generateReply(input), isSafeError('invalid_response', true));
   assert.equal(cancelled, true);
 });
@@ -234,7 +237,7 @@ test('HTTP failures are safe, never retried, and retain uncertain cost instead o
   for (const [status, code] of cases) {
     let calls = 0;
     let cancelled = false;
-    const response = new Response(new ReadableStream<Uint8Array>({ cancel() { cancelled = true; } }), { status });
+    const response = new Response(new ReadableStream<Uint8Array>({ /** Observe response-stream cancellation so bounded reads and timeout cleanup can be asserted. */ cancel() { cancelled = true; } }), { status });
     const service = new LlmService(config, 1_000, async () => { calls += 1; return response; });
     await assert.rejects(service.generateReply(input), isSafeError(code, true));
     assert.equal(calls, 1);
@@ -287,7 +290,7 @@ test('the provider deadline bounds stalled headers without relying on transport 
 
 test('the provider deadline includes stalled body reads and closes their reader', async () => {
   let cancelled = false;
-  const stream = new ReadableStream<Uint8Array>({ cancel() { cancelled = true; } });
+  const stream = new ReadableStream<Uint8Array>({ /** Observe response-stream cancellation so bounded reads and timeout cleanup can be asserted. */ cancel() { cancelled = true; } });
   const service = new LlmService(config, 20, async () => new Response(stream));
   await assert.rejects(service.generateReply(input), isSafeError('timeout', true));
   assert.equal(cancelled, true);
@@ -297,7 +300,7 @@ test('the provider deadline includes stalled body reads and closes their reader'
 test('caller cancellation during a body read cancels the stream and releases the lock', async () => {
   const reading = deferred<void>();
   let cancelled = false;
-  const stream = new ReadableStream<Uint8Array>({ pull() { reading.resolve(); }, cancel() { cancelled = true; } }, { highWaterMark: 0 });
+  const stream = new ReadableStream<Uint8Array>({ /** Produce the next controlled stream chunk or stall to exercise bounded response handling. */ pull() { reading.resolve(); }, /** Observe response-stream cancellation so bounded reads and timeout cleanup can be asserted. */ cancel() { cancelled = true; } }, { highWaterMark: 0 });
   const controller = new AbortController();
   const service = new LlmService(config, 1_000, async () => new Response(stream));
   const pending = service.generateReply(input, controller.signal);

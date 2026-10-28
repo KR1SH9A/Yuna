@@ -1,3 +1,4 @@
+/** Test moderation authority bindings and conversation/reply entity transitions without external effects. */
 import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { afterAll, beforeAll, test } from '@jest/globals';
@@ -17,14 +18,30 @@ beforeAll(() => {
 afterAll(async () => { await metadataOrm?.close(); });
 
 const createdAt = new Date('2026-10-15T00:00:00Z');
+/** Convert relative fixture seconds to a deterministic timestamp. */
 const at = (seconds: number): Date => new Date(createdAt.getTime() + seconds * 1000);
 const guildId = '100000000000000001';
 const channelId = '100000000000000002';
 const userId = '100000000000000003';
 const messageId = '100000000000000004';
+/** Build the scoped installation identity used by this fixture. */
 const scope = () => ({ installationId: randomUUID(), guildId, createdAt });
+/** Build an explicit channel audience for this fixture. */
 const audience = (): AudienceBinding => ({ schemaVersion: 1, visibility: 'channel', channelId, requesterUserId: null, revision: 1 });
 
+test('operation identity survives JSONB field reordering while binding exact history and warning destination', () => {
+  const ban = { schemaVersion: 1, kind: 'ban', reason: 'Reason', deleteMessageSeconds: 0 } as const;
+  assert.equal(hashModerationOperation(userId, ban), hashModerationOperation(userId,
+    { reason: 'Reason', deleteMessageSeconds: 0, kind: 'ban', schemaVersion: 1 }));
+  assert.notEqual(hashModerationOperation(userId, ban), hashModerationOperation(userId, { ...ban, deleteMessageSeconds: 1 }));
+  const warning: ModerationOperation = { schemaVersion: 1, kind: 'warning', text: 'Warning', destination: { kind: 'channel', channelId },
+    allowedMentions: { users: [], roles: [], everyone: false } };
+  assert.equal(hashModerationOperation(userId, warning), hashModerationOperation(userId,
+    { allowedMentions: { everyone: false, roles: [], users: [] }, destination: { channelId, kind: 'channel' }, text: 'Warning', kind: 'warning', schemaVersion: 1 }));
+  assert.notEqual(hashModerationOperation(userId, warning), hashModerationOperation(userId, { ...warning, destination: { kind: 'direct_message' } }));
+});
+
+/** Build original-evidence input with a fixed author and capture identity. */
 function evidenceInput(overrides: Partial<EvidenceRevisionInput> = {}): EvidenceRevisionInput {
   return {
     ...scope(), caseId: randomUUID(), captureRevision: 1, originalEventId: randomUUID(), sourceChannelId: channelId,
@@ -34,6 +51,7 @@ function evidenceInput(overrides: Partial<EvidenceRevisionInput> = {}): Evidence
     missingReasons: [], purgeAfter: at(86400), ...overrides,
   };
 }
+/** Build a policy-authorized action fixture with exact evidence and policy references. */
 function policyAction() {
   const evidence = new EvidenceRevision(evidenceInput());
   const policyRevisionId = randomUUID();
@@ -53,6 +71,7 @@ function policyAction() {
   });
   return { action, evidence, finding, policyRevisionId };
 }
+/** Build a reply intent fixture with its destination, source and accepted result bound together. */
 function deliveryInput(overrides: Partial<ReplyDeliveryInput> = {}): ReplyDeliveryInput {
   return {
     ...scope(), requestId: randomUUID(), acceptedResultReference: randomUUID(), acceptedContent: 'An accepted reply', supportingReferences: [],
@@ -61,6 +80,7 @@ function deliveryInput(overrides: Partial<ReplyDeliveryInput> = {}): ReplyDelive
     sourceVersion: 1, privacyRevision: 1, audienceBinding: audience(), deadline: at(60), purgeAfter: at(3600), maxAttempts: 3, ...overrides,
   };
 }
+/** Claim the fixture delivery with a known executor and generation for outcome tests. */
 function claimDelivery(delivery: ReplyDelivery): number {
   return delivery.claimDispatch({ expectedGeneration: delivery.generation, expectedRowRevision: delivery.rowRevision, sourceVersion: 1, privacyRevision: 1, audienceRevision: 1, executorId: 'worker', requestFingerprint: 'a'.repeat(64), at: at(1) });
 }

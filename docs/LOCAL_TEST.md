@@ -1,41 +1,32 @@
-# Run Yuna on this Mac
+# Run Yuna locally
 
-This first milestone supports text conversation in **one configured Discord server**, in every channel Yuna can read and send to. Mention Yuna or reply to her message, including with the reply ping turned off. Ordinary messages, DMs, other bots and webhooks are ignored. Moderation, Jev decisions, personal memory and debates are not enabled.
+Yuna runs in one configured Discord server with a bot process, a restricted AI worker and PostgreSQL. The implemented features are direct conversation, approved server knowledge, original-message moderation, owner administration, personal usage limits, private explicit memory and consented Debate scoring. Configuration enables features; individual Memory and Debate consent is still required. Optional governance, kick, inferred memory and semantic indexing remain outside the shipped route.
 
-## 1. Prepare the local tools and database
+## 1. Prepare Node and PostgreSQL
 
-Use Node.js 24 or newer and PostgreSQL 17 or newer. Dependencies are locked:
+Use Node.js 24 or newer and PostgreSQL 17 or newer. Install the locked dependencies in this repository:
 
 ```sh
-cd /Users/krishnamonidas/Documents/Yuna
 npm ci
 ```
 
-If you already have local PostgreSQL running, use it and create a new empty `yuna` database owned by your administrative PostgreSQL user. Otherwise, with Homebrew installed:
+Create an empty `yuna` database owned by your administrative PostgreSQL account. Use an existing local PostgreSQL installation, or install/start one through your normal package manager. On a Homebrew Mac, the package is `postgresql@17`; consult its [installation instructions](https://formulae.brew.sh/formula/postgresql@17) for the executable path and service setup. The database preparer needs schema ownership and permission to create the two runtime login roles. Bot and worker startup never apply migrations or create databases.
 
-```sh
-brew install postgresql@17
-brew services start postgresql@17
-export PATH="$(brew --prefix postgresql@17)/bin:$PATH"
-createdb yuna
-```
+## 2. Create and invite the Discord application
 
-The default Homebrew administrator is normally your Mac login username; `whoami` shows that name. Use your actual PostgreSQL account if your installation differs. Keep this database local. The setup command below needs database ownership and permission to create login roles. It deliberately refuses elevated runtime roles and incompatible pre-existing schemas. [Homebrew PostgreSQL instructions](https://formulae.brew.sh/formula/postgresql@17).
+In the [Discord Developer Portal](https://discord.com/developers/applications):
 
-## 2. Create and invite the Discord bot
+1. Create the application and bot. Obtain the bot token and enable **Message Content Intent** for original-text capture and ordinary conversation triggers.
+2. Configure Guild Install with `bot` and `applications.commands`. Copy the application ID and invite it to your chosen server. Slash commands are registered explicitly in step 4. [Discord command setup](https://docs.discord.com/developers/interactions/application-commands).
+3. Grant **View Channels**, **Send Messages** and **Read Message History** in the channels you will test. Conversation replies in threads also require **Send Messages in Threads** and actual thread access. Debate result publication currently supports ordinary text and announcement channels, not threads or voice channels.
+4. For ban/unban tests, grant **Ban Members** and place Yuna's highest role above eligible target roles. **View Audit Log** enables exact audit reconciliation after uncertain ban/unban responses. Channel overrides and target hierarchy still apply. Yuna does not require Administrator for itself. [Discord permissions](https://docs.discord.com/developers/topics/permissions).
+5. Enable Developer Mode in your Discord client and copy the server ID.
 
-Open the [Discord Developer Portal](https://discord.com/developers/applications), create an application named Yuna, then:
+A public web server or tunnel is unnecessary: this deployment receives interactions over the Discord Gateway. Owner/control operations require both Yuna's application grant and fresh native Discord authority. An administrator who has not been granted a Yuna capability does not acquire it merely by seeing a command.
 
-1. On **Bot**, obtain/reset the bot token and enable **Message Content Intent**. Save the token locally in the next step.
-2. On **Installation**, enable **Guild Install**. Add the `bot` scope and these bot permissions: **View Channels**, **Send Messages**, **Read Message History**, and **Send Messages in Threads** if testing threads.
-3. Open the installation link and add Yuna to your server. Channel overrides must allow the same permissions. Private threads also require access; archived/locked threads may reject replies.
-4. In Discord's **User Settings → Advanced**, enable Developer Mode. Right-click your server and copy its **Server ID**.
+## 3. Create the local environment and policy files
 
-No Administrator permission, slash command registration, public web server or tunnel is needed for this milestone. The app connects through Discord's Gateway. [Discord application setup](https://docs.discord.com/developers/quick-start/getting-started), [Gateway intents](https://docs.discord.com/developers/events/gateway#gateway-intents).
-
-## 3. Fill the three local environment files
-
-Run these copies only when the destination files do not already exist:
+Copy these only if the destination files do not exist:
 
 ```sh
 cp -n .env.admin.example .env.admin
@@ -44,27 +35,42 @@ cp -n .env.worker.example .env.worker
 chmod 600 .env.admin .env.bot .env.worker
 ```
 
-Edit them locally; do not paste keys or passwords into chat.
+Fill the values locally. The ignored `.env` files contain credentials; the policy file contains rules, budgets and retention, never keys.
 
-| File | Values to fill |
+| File | Required configuration |
 | --- | --- |
-| `.env.admin` | `ADMIN_DATABASE_URL` with your database owner's username; distinct `BOT_DATABASE_PASSWORD` and `WORKER_DATABASE_PASSWORD`. |
-| `.env.bot` | The matching bot database password in `BOT_DATABASE_URL`, `DISCORD_BOT_TOKEN`, and `DISCORD_GUILD_ID`. Keep `REPLY_MODEL=fake` for the first connection test. |
-| `.env.worker` | The matching worker database password in `WORKER_DATABASE_URL`. Keep `DEEPSEEK_MODE=fake` and `JEV_MODE=disabled` initially. |
+| `.env.admin` | Administrative database URL and distinct bot/worker database passwords. |
+| `.env.bot` | Matching `BOT_DATABASE_URL`, `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `DISCORD_APPLICATION_ID`, and `REPLY_MODEL`. Set `JEV_MODEL` when enabling Debates or using the starter moderation selectors. |
+| `.env.worker` | Matching `WORKER_DATABASE_URL`, provider modes/model IDs and provider keys only when using live modes. |
 
-Use long random passwords. Hexadecimal passwords are easy to place in URLs; otherwise percent-encode special characters in the two database URLs. The admin file contains raw password values, quoted when needed for Node's environment-file syntax. The files are ignored by Git. Do not give the admin URL or Discord token to the worker.
+For the first rehearsal, use `REPLY_MODEL=fake` and `JEV_MODEL=fake` in `.env.bot`, and `DEEPSEEK_MODE=fake`, `JEV_MODE=fake` in `.env.worker`. Fake providers make no paid calls. Fake assessments remain uncertain and cannot authorize automatic sanctions. `JEV_MODE=disabled` is suitable for a conversation-only test; assessment tasks cannot complete while that route is disabled.
 
-Prepare the database once:
+There are two reviewed starters:
+
+```sh
+cp -n config/yuna.example.json config/yuna.json
+```
+
+Set `YUNA_CONFIG_FILE=config/yuna.json` in `.env.bot`. The standard starter enables four original-text moderation rules with warnings for supported violations, private Memory, and Debates. It allows 1,000 total provider attempts and 10 requested attempts per member per UTC day. It sets **no monetary cap**. It never automatically bans or deletes message history with its initial action mappings.
+
+Alternatively copy `config/yuna.budgeted.example.json`. This selects a $5.00 server budget and $0.50 member budget per UTC day, with the same attempt limits. Its price list is intentionally empty: populate verified current prices for every selected provider/model before live work can be admitted. Missing prices under monetary caps stop claims rather than treating calls as free. See [configuration details](../config/README.md).
+
+Without `YUNA_CONFIG_FILE`, new installations use the conservative defaults: Community enabled, 20 server attempts/day, no promised dollar ceiling, and moderation/Memory/Debates disabled. Editing a file alone does not apply it. On startup, a configured file that differs from the persisted approved policy holds new conversational and automatic moderation intake until the owner applies it.
+
+## 4. Prepare the database and register commands
 
 ```sh
 npm run db:prepare
+npm run register:commands
 ```
 
-Success prints migration status and the role names. Re-running verifies migration checksums and reapplies the restricted grants/password settings; it preserves existing data. The bot gets only conversation-related tables; the worker gets only specific task functions. Startup never creates a database or applies migrations.
+Database preparation builds the project, applies the versioned migrations and verifies restricted grants. Re-running preserves data and verifies checksums. The bot has only the enabled owner tables; the worker can call reviewed task functions and cannot query private business tables or raw source content directly. Keep the administrative URL and Discord token out of the worker environment.
 
-## 4. Start both processes and test a free reply
+Command registration updates this application's `/yuna` command in the configured server. Run it again after upgrading command definitions. It is an explicit remote write and is not performed automatically on bot startup.
 
-The setup command built the project. Open two terminals in this project folder:
+## 5. Start, enroll the owner and apply configuration
+
+In two project terminals:
 
 ```sh
 # Terminal 1
@@ -76,45 +82,87 @@ npm run local:worker
 npm run local:bot
 ```
 
-Wait for `ai-worker: ready.` and `bot: ready.`. In a permitted channel, send **@Yuna hello** using Discord's actual mention picker. The worker should produce a clearly labeled fake response. Reply to it with the mention toggle off to verify reply detection. Check another readable channel as well.
+Wait for both processes to report ready. As the **current server owner**, run `/yuna bootstrap`, then `/yuna status`, then `/yuna configure` if using a policy file. Bootstrap enrolls the verified owner once; configuration validates and atomically saves the selected file, usage rules and feature admission. The starter's `env:REPLY_MODEL` and `env:JEV_MODEL` resolve only those two nonsecret model selectors from the bot environment. Enabled Debates require a bot `JEV_MODEL` selector; the worker must expose the matching assessment route.
 
-Keep both terminals running and the Mac awake. Ctrl+C stops each process. After editing code, stop both processes, run `npm run build`, then restart them.
+Check a free reply using Discord's actual mention picker: **@Yuna hello**. Reply to Yuna's message with its ping toggle off to test reply detection. Ordinary messages do not trigger Community replies; original-message moderation is independently admitted when enabled. Commands respond ephemerally. Bot/webhook/system identities never become inferred human sanction targets.
 
-## 5. Enable real DeepSeek conversation
+Keep both terminals and the Mac running. Ctrl+C stops each process. After code changes, stop them, run `npm run db:prepare` and `npm run register:commands` when applicable, then restart. Only one bot may own the configured guild. A second bot is rejected, and loss of the first bot's database ownership connection causes shutdown instead of allowing two dispatchers.
 
-Stop both processes. In `.env.worker`, set:
+## 6. Exercise the implemented commands
 
-```dotenv
-DEEPSEEK_MODE=live
-DEEPSEEK_API_KEY=your-key-here
-DEEPSEEK_MODEL=deepseek-flash
-JEV_MODE=disabled
+Discord displays the exact option names and bounds. IDs and revisions below come from private command responses; a stale revision is rejected rather than overwriting another change.
+
+| Commands | What to verify |
+| --- | --- |
+| `/yuna status`, `bootstrap`, `configure` | Owner enrollment, installation/safety/configuration revisions and approved feature states. Configure reads the current local file and applies an authorized revision. |
+| `/yuna grant`, `revoke` | Grant a specific capability with optional channel/target restrictions; revoke at the displayed authority/row revisions. Fresh native permissions are checked again when a grant is used. |
+| `/yuna pause`, `resume` | Use the displayed safety revision. Pausing fences pending disclosures/effects; resume does not revive obsolete task bindings. |
+| `/yuna channel-status [channel]`, `channel` | Read the selected channel's mode and current row revision; the read defaults to this channel and requires the same scoped `community.configure` authority as editing. Use the returned revision to set `silent` or `direct`. Revision zero means no stored settings yet. Changing settings cancels pending uses in that channel. |
+| `/yuna usage`, `limit`, `limit-clear` | Inspect only your own UTC-day usage. Set a stricter attempt limit, including zero, and/or an exact currency budget. Clearing a personal preference retains server/default limits and existing spend. |
+| `/yuna ban`, `unban`, `action` | Staff requests create durable intent. Inspect the action ID for confirmed/failed/unknown execution; acceptance is not proof Discord changed. Unban requires an explicit request by a current administrator with its Yuna grant. |
+| `/yuna report` | Name the original message and submit an allegation. A report does not replace missing original evidence or establish a violation. |
+| `/yuna knowledge approve`, `read`, `search`, `visibility`, `retire` | Approve exact reference text with a recorded source and explicit audience. Channel is the default audience. Corrections create a replacement with the predecessor's current revision; retirement/audience changes invalidate pending copies. |
+| `/yuna remove` | Begin removal at the displayed installation revision. New work stops; owner cleanup records complete/pending/retained dispositions. Already dispatched external effects and unresolved accounting retain their evidence. |
+
+`knowledge.manage` operations need current native administrator authority plus an appropriate application grant. Search is lexical and bounded; only approved, unexpired entries visible to the exact source channel can enter conversation context. Knowledge remains lower-trust reference text, not instructions or authority. Retired/expired/changed entries are checked again at worker disclosure, provider start, acceptance and final delivery.
+
+### Private Memory
+
+1. `/yuna memory inspect` shows your current privacy revision (initially 0).
+2. `/yuna memory consent granted:true revision:0 days:30` grants private storage for 1–30 days; use the current revision returned for subsequent mutations.
+3. `/yuna memory remember` saves only your explicit text, up to 500 characters. At most 50 facts are retained per member; inspection is paginated and can use a literal query.
+4. `/yuna memory forget` erases one named fact or all facts. Consent withdrawal also erases stored facts; shortening the retention period erases prior facts before the change commits.
+
+Facts are private to their owner and guild installation. They are not inferred from channel history, sent to a provider, embedded, or loaded into public conversation context. Inspection, withdrawal and forgetting remain available when the feature is paused or disabled.
+
+### Consented Debates
+
+Use an ordinary text or announcement channel where Yuna can publish. A proposer selects an opponent, exact topic, retention duration and a JSON rubric. [The editable two-criterion example](../config/debate-rubric.example.json) is included with Yuna's source as an illustrative starting point, not a scoring-accuracy claim. Supply this complete compact JSON as the `rubric` option:
+
+```json
+{"criteria":[{"id":"reasoning","description":"Support the stated claim with connected, relevant reasons.","levels":["No relevant reasons","Some relevant reasons with gaps","Clear connected reasons"],"weight":"1"},{"id":"engagement","description":"Address the other participant's actual argument fairly and specifically.","levels":["Does not address the argument","Addresses part of the argument","Addresses its central reasoning fairly"],"weight":"1"}],"minimumWinningMargin":"0.1","minimumConfidence":0.9,"paired":true,"maximumPairDifference":1}
 ```
 
-In `.env.bot`, set `REPLY_MODEL=deepseek-flash`, then start both processes again. Keep the two model strings identical. `deepseek-flash` is the current documented Flash model identifier as of 21 October 2026; another supported text model can be chosen explicitly. The adapter uses the direct DeepSeek chat endpoint with thinking disabled, a 512-token output limit, and no tools or automatic retries. [DeepSeek API documentation](https://api-docs.deepseek.com/).
+1. `/yuna debate propose` records the proposal in the current channel. The private response attaches the full topic, participants, paying initiator, model, rubric, retention and publication scope.
+2. Each invited participant uses `/yuna debate status` to review that complete attachment, then `/yuna debate consent` with the exact `scope-hash` and `accept:true`. One participant cannot consent for the other.
+3. `/yuna debate start` opens explicit submissions. Each participant uses `/yuna debate submit` for their own text, up to 1,000 characters per submission. The session is bounded to 20 submissions and 12,000 serialized transcript bytes.
+4. `/yuna debate freeze` closes the transcript and requests the declared Jev evaluations. Paired scoring creates original/reversed evaluation tasks. Provider attempts count against the initiating participant's allowance and the server's allowance.
+5. `/yuna debate result` privately shows accepted results and publication state. Accepted totals and limitations are automatically published to the consented channel, once. The owner computes totals/winner from the declared rubric; insufficient coverage/confidence or incompatible paired results stay uncertain. Scores never authorize sanctions or grants.
+6. Either participant can use `consent accept:false` or `cancel`. Pending uses are fenced and retained payloads erased. A send already in flight or a published result cannot be recalled through local cancellation; unknown sends are reconciled, never blindly resent.
 
-For the planned Jev decision adapter, set `JEV_MODEL=typesafe/jev-1.14` and use `OPENROUTER_API_KEY` in `.env.worker`. Keep `JEV_MODE=disabled`: adding the key/model alone does not enable classification. This pinned OpenRouter model ID was verified on 21 October 2026 against [OpenRouter's Jev documentation](https://openrouter.ai/docs/guides/community/jev). Jev's structured classification/decision work remains the next separately scoped integration.
+Debates collect explicit submissions only. They do not scrape channel history, edits or deleted messages. Full scope/result attachments avoid silently truncating the review. Removing `JEV_MODEL` prevents new evaluation-producing commands but keeps inspection, withdrawal and cleanup available.
 
-## Pilot behavior and limits
+## 7. Enable live providers and price bounds
 
-- Maximum **20 claimed generation attempts per UTC day per server**, including fake/failed attempts; restarting does not reset it. At most 20 requests can be pending. This limits calls, **not dollar spending**; provider pricing and billing remain authoritative.
-- Input is the current text (up to 4,000 characters), plus only the replied-to Yuna message (up to 2,000). No channel archive, attachments, browsing or personal memory is loaded. Replies are at most 2,000 characters and do not ping users/roles/everyone.
-- Work expires two minutes after the source message. Provider timeout defaults to 30 seconds. Edit/delete before dispatch cancels the reply; editing does not start a new request. Send a new mention to retry intentionally.
-- Disconnections and bot restarts invalidate pending work because edits/deletions may have been missed. An already sent reply cannot be recalled by cancellation. Ambiguous sends are never automatically resent; only exact attributable Discord evidence can reconcile them.
-- Stored input/output payloads are cleared after 24 hours by maintenance while the bot runs. If stopped, cleanup resumes on startup. Technical IDs, hashes, usage and deduplication metadata remain; complete metadata deletion is a later maintenance feature. Discord messages and DeepSeek's own retention are outside this local cleanup.
-- Use one bot instance and the default single worker lane for the first test. This is a local pilot, not a production moderation or load-tested service.
+Set `DEEPSEEK_MODE=live`, `DEEPSEEK_API_KEY` and the selected `DEEPSEEK_MODEL` in the worker. Set the identical `REPLY_MODEL` in the bot. Set `JEV_MODE=live`, `OPENROUTER_API_KEY` and a compatible `JEV_MODEL` in the worker; use the same `JEV_MODEL` in the bot. The rules and rubric do not hard-code model behavior. The adapters currently implement [DeepSeek's chat interface](https://api-docs.deepseek.com/) and [OpenRouter's Jev Decisions interface](https://openrouter.ai/docs/guides/community/jev); selecting a model name does not add a different provider protocol.
 
-## If it does not reply
+Restart after environment changes, then apply `/yuna configure` after reviewing the resolved policy. Set prices from the provider's current published rates for your selected model, including any charges relevant to that route. Price snapshots use exact decimal strings, currency, a version and conservative token ceilings. Monetary caps reserve the maximum admitted attempt cost before disclosure. Unknown/unpriced liabilities and mismatched currencies block further monetary claims; they are not reported as free calls. `/yuna usage` shows a personal currency mismatch explicitly; clear or replace that stale preference.
+
+Conversation and observation input are bounded before sending. Priced conversation routes require at least a 32,768-token conservative input ceiling; moderation requires 65,536. Follow [the configuration guide](../config/README.md) for each route's output/input bounds. The application makes one provider request per admitted task attempt and no automatic HTTP retries. Real Discord/provider smoke tests require your credentials and are separate from automated tests.
+
+## Retention, delivery and operational limits
+
+- Current conversational text is limited to 4,000 characters; previous reply context to 2,000. Combined source, previous reply and approved knowledge are bounded to 6,000 characters and the provider request body limit. No general channel archive, web browsing or attachment inspection is performed by Community.
+- Conversation work expires two minutes after its source. Replies contain at most 2,000 characters and suppress mentions. Source edits/deletions invalidate unsent current-source work; they do not replace retained original moderation evidence.
+- Starter payload/metadata/evidence/accounting retention is 1/7/30/30 days. The bot runs bounded cleanup even while ordinary work is paused. Memory and Debate retain their separately consented, bounded lifetimes. Expiry blocks disclosure immediately; maintenance physically erases later.
+- Resolved Community/Jobs/Intake metadata and expired audit records have cleanup paths. Minimal knowledge lineage, memory deletion/consent receipts, Debate consent/publication metadata and unresolved external/accounting evidence can remain with explicit retained dispositions. A removal acknowledgment is not a promise that every identifier disappeared.
+- Local erasure cannot delete content already received by providers or Discord, including private command responses/attachments and published messages. Moderation evidence is independently owned; forgetting Memory does not erase it.
+- PostgreSQL notifications reduce queue delay, and periodic scans recover missed wakeups. Source observation gaps on reconnect/restart invalidate pending work. Ambiguous Discord sends stay unknown until exact bot/channel/nonce/hash or audit attribution proves an outcome.
+- Use `npm run health` for a bounded database, ownership and workflow snapshot. Conversation latency logs contain bounded timings and internal IDs, not message bodies. Increase `WORKER_CONCURRENCY` from 1 only after checking queue wait and provider failures; limits still apply across lanes.
+
+## Troubleshooting and verification
 
 | Symptom | Check |
 | --- | --- |
-| Database preparation fails | Database exists and is empty on first setup; admin URL points to its owner; owner can create roles; both passwords are filled. The migration runner refuses unsafe existing roles/checksum drift. |
-| Worker startup fails | Run `db:prepare`; check worker URL/password and that `JEV_MODE=disabled`. |
-| Bot startup fails or closes | Bot token, invited server ID, PostgreSQL URL and Message Content Intent in the Portal. |
-| Online, but no reply | Both processes are running; real mention/reply trigger; matching model strings; View/Send/History permissions; source is recent and unchanged. Ordinary messages and other servers are intentionally ignored. |
-| Reply stopped after many tests | The 20-attempt UTC-day limit includes fake and unsuccessful claims. Wait until the next UTC day; restarting does not clear it. |
-| `generation ended (authentication)` / `(insufficient_balance)` | Fix the key or DeepSeek account balance locally; send a new mention. |
-| `generation ended (rate_limited)` / `(timeout)` | Provider could not finish this attempt. There is no automatic retry; send a new mention when ready. |
-| A request disappeared during restart/edit | Expected for pending work. Send a new mention after both processes are ready. |
+| Database preparation fails | Correct database owner/role-creation authority, passwords, migration checksums and compatible prior schema. Do not run runtime processes with the admin URL. |
+| Bot is online but `/yuna` is absent/stale | Correct application ID/server, Guild Install command scope, and rerun `npm run register:commands`. |
+| Commands report unavailable on startup | Wait for readiness; check the ownership lock, Gateway permissions and process logs. |
+| Configured policy awaits approval | Current owner runs bootstrap if needed, then configure. Confirm bot model selectors match the worker. |
+| No conversation reply | Both processes live; actual mention/reply trigger, channel `direct`, current source, matching model, native send/history permissions and remaining usage. |
+| Moderation remains incomplete/uncertain | Original capture/access, declared evidence requirements, current published policy, matching observation/assessment models and enabled Jev route. Missing evidence never becomes a violation. |
+| A staff ban was accepted but did not happen | Inspect action state, current grant/native permission, role hierarchy and retained evidence. An unknown result is not safely retriable. |
+| Monetary work does not start | Verified exact-route prices, token ceilings, currency compatibility and prior unknown liabilities. Budgeted templates deliberately ship without invented prices. |
+| Debate cannot start or publish | Both exact-scope consents, matching `JEV_MODEL`, enabled feature, unexpired transcript, quotas and an ordinary text/announcement destination with current permissions. |
+| Shutdown reports lost ownership | The bot's dedicated database lock connection was lost. Resolve that connection failure and restart one bot process. |
 
-Automated verification: `npm run test:all` uses private temporary PostgreSQL clusters and mocked Discord/provider calls. It does not use your server, bot token or API credit. A real Discord/DeepSeek round trip still requires your local credentials and the manual checks above.
+Run `npm run typecheck`, `npm run check:docs`, and `npm test` for offline source/unit checks. `npm run test:all` additionally uses private temporary PostgreSQL clusters with mocked providers/Discord. Run PostgreSQL suites serially; they do not use production credentials or spend API credit. Automated tests do not establish that your actual server permissions, model account or live billing are configured correctly.

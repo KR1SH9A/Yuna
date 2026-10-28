@@ -2,7 +2,10 @@
  * Planned component: TaskSignalDto
  * Kind: Versioned queue notification DTO
  * Owner: Platform / Jobs
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Current notifications carry empty wake-up hints. Scoped result references come from the route-specific task contracts and durable database scans.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Wake an execution or completion consumer with a stored task identity.

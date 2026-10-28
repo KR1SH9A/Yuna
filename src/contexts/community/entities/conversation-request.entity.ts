@@ -1,3 +1,4 @@
+/** Persist one source-bound conversation workflow; delivery success belongs to its separate reply intent. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -56,6 +57,7 @@ export class ConversationRequest extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Bind one immutable source, destination and context selection to a deadline within its retention lifetime. */
   constructor(input: ConversationRequestInput) {
     super(input);
     assertDiscordId(input.source.channelId);
@@ -94,6 +96,7 @@ export class ConversationRequest extends ScopedEntity {
     this.updatedAt = new Date(this.createdAt);
   }
 
+  /** Select the exact task expected for the next routing or generation stage while the request remains eligible. */
   expectTask(taskId: string, stage: 'routing' | 'generating', expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     assertUuid(taskId);
@@ -104,6 +107,7 @@ export class ConversationRequest extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Accept only the expected routing completion and either permit generation or decline the reply. */
   acceptRouting(input: ConversationCompletion, shouldReply: boolean): void {
     this.checkCompletion(input, 'routing');
     this.expectedTaskId = null;
@@ -142,6 +146,7 @@ export class ConversationRequest extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Cancel unfinished work and erase context references and interaction secrets without rewriting completed outcomes. */
   purgePayload(reason: string, expectedRowRevision: number, at: Date): void {
     this.check(expectedRowRevision, at);
     invariant(reason.length > 0 && reason.length <= 120, 'A bounded purge reason is required');
@@ -154,16 +159,19 @@ export class ConversationRequest extends ScopedEntity {
     this.touch(at);
   }
 
+  /** Reject unexpected tasks, obsolete cancellation generations and source versions before owner acceptance. */
   private checkCompletion(input: ConversationCompletion, stage: ConversationStage): void {
     this.check(input.expectedRowRevision, input.at);
     assertUuid(input.resultId);
     invariant(this.stage === stage && this.expectedTaskId === input.taskId && this.cancellationGeneration === input.cancellationGeneration, 'Stale or unexpected task completion');
     invariant(this.sourceVersion === input.sourceVersion && this.canceledAt === null && input.at < this.deadline && this.payloadPurgedAt === null, 'Request is no longer eligible');
   }
+  /** Reject stale row revisions and backwards transition times before changing owner state. */
   private check(expected: number, at: Date): void {
     assertDate(at, 'at');
     invariant(this.rowRevision === expected, 'Stale request revision');
     invariant(at >= this.updatedAt, 'Transition time cannot move backwards');
   }
+  /** Advance the access revision and copy the transition timestamp after a validated change. */
   private touch(at: Date): void { this.rowRevision = nextRevision(this.rowRevision); this.updatedAt = new Date(at); }
 }

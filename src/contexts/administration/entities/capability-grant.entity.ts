@@ -1,3 +1,4 @@
+/** Store one revocable Yuna capability and its exact channel/target scope; Discord native permissions are checked separately. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -37,6 +38,7 @@ export class CapabilityGrant extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Validate the granted capability, scope, source operation and lifetime; copy caller-owned values so later mutation cannot widen it. */
   constructor(input: CapabilityGrantInput) {
     super(input);
     assertDiscordId(input.grantee.userId);
@@ -57,6 +59,7 @@ export class CapabilityGrant extends ScopedEntity {
     this.updatedAt = new Date(input.grantedAt);
   }
 
+  /** Revoke the exact grant revision and advance its authority fence so pending work can be invalidated by the owning service. */
   revoke(expectedRevision: number, reasonCode: string, at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     if (this.revokedAt) return;
@@ -80,6 +83,7 @@ export class CapabilityGrant extends ScopedEntity {
       && (this.scope.targetUserIds.length === 0 || (!!input.targetUserId && this.scope.targetUserIds.includes(input.targetUserId)));
   }
 
+  /** Advance optimistic concurrency metadata after a valid local state transition. */
   private advanceRevision(at: Date): void {
     this.rowRevision += 1;
     this.updatedAt = new Date(at);

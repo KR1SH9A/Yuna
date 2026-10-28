@@ -1,3 +1,4 @@
+/** Exercise conversation intake, worker execution, accepted replies and uncertain delivery using real PostgreSQL and fake external adapters. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, jest, test } from '@jest/globals';
@@ -54,16 +55,20 @@ async function scenario(unknownSend = false) {
   const sent: DiscordReplyRequest[] = [];
   let reconciledMessageId: string | null = null;
   const transport: Pick<DiscordGateway, 'readSource' | 'sendReply' | 'findReply'> = {
+    /** Return the simulated current Discord source and permission state. */
     async readSource() { return { exists: true, canSend: true, sourceHash: message.sourceHash }; },
+    /** Capture one simulated send and return this scenario's chosen transport outcome. */
     async sendReply(request) {
       sent.push(request);
       return unknownSend ? { classification: 'unknown', code: 'simulated_connection_loss' }
         : { classification: 'delivered', messageId: '940000000000000004' };
     },
+    /** Return only the remotely attributed fixture reply during reconciliation. */
     async findReply() { return reconciledMessageId; },
   };
   const delivery = new ReplyDeliveryService(botOrm, scope, administration, intake, transport);
   return { scope, model, message, conversation, delivery, administration, sent,
+    /** Expose a previously uncertain fixture send as confirmed remote state. */
     confirmRemoteDelivery() { reconciledMessageId = '940000000000000004'; } };
 }
 
@@ -78,6 +83,7 @@ async function finishNext(model: string): Promise<void> {
   assert.equal(await worker.recordResult(claim, { outcome: 'success', reason: 'completed', payload }), 'stored');
 }
 
+/** Read the stored fixture delivery state for the test assertion. */
 async function deliveryState(installationId: string): Promise<string | undefined> {
   const rows = await botOrm.em.fork().execute<{ state: string }[]>('select state from reply_delivery where installation_id=?', [installationId]);
   return rows[0]?.state;

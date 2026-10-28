@@ -1,3 +1,4 @@
+/** Check the isolated Jest cloning shim against the runtime values the application actually uses. */
 import assert from 'node:assert/strict';
 import { test } from '@jest/globals';
 import { copyJson } from '../../src/platform/db/entity-values.js';

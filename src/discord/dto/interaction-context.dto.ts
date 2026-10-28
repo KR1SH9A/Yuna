@@ -2,7 +2,10 @@
  * Planned component: InteractionContextDto
  * Kind: Trusted transport-context DTO
  * Owner: Discord boundary
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Current authenticated command identity is DiscordCommandIdentity in contracts.ts; native authority facts are read through the gateway.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Keep verified invocation identity separate from user-supplied operation arguments.

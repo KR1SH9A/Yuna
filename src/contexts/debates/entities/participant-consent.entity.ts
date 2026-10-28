@@ -1,3 +1,4 @@
+/** Preserve each independently authenticated Debate consent and its durable withdrawal. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -36,6 +37,7 @@ export class ParticipantConsent extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly purgeAfter: Date;
 
+  /** Validate and copy immutable identity, source bindings and retention before creating this record. */
   constructor(input: ParticipantConsentInput) {
     super(input);
     assertUuid(input.sessionId);
@@ -58,6 +60,7 @@ export class ParticipantConsent extends ScopedEntity {
     this.updatedAt = new Date(input.acceptedAt);
   }
 
+  /** Record an irreversible withdrawal without rewriting the original acceptance facts. */
   withdraw(reasonCode: string, at: Date): void {
     if (this.withdrawnAt) return;
     assertDate(at, 'at');

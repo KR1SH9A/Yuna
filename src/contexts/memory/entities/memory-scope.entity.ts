@@ -1,3 +1,4 @@
+/** Persist a member's private-memory consent and revision fence independently of erasable fact content. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -14,6 +15,7 @@ export interface MemoryScopeInput extends ScopedEntityInput {
   privacy: MemoryPrivacyConfiguration;
 }
 
+/** Validate explicit retention, purpose provenance and permitted audiences before storing consent. */
 function validatePrivacy(value: MemoryPrivacyConfiguration): void {
   assertNonNegativeInteger(value.retentionConfiguration.maxAgeSeconds, 'maxAgeSeconds');
   invariant(value.retentionConfiguration.maxAgeSeconds > 0, 'Memory retention must be explicit and positive');
@@ -41,9 +43,11 @@ export class MemoryScope extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: Date, columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Copy this member's consent settings into a distinct installation-scoped privacy record. */
   constructor(input: MemoryScopeInput) {
     super(input);
     assertDiscordId(input.userId);
+    /** Validate explicit retention, purpose provenance and permitted audiences before storing consent. */
     validatePrivacy(input.privacy);
     this.userId = input.userId;
     this.purposeConsents = copyJson(input.privacy.purposeConsents);
@@ -55,6 +59,7 @@ export class MemoryScope extends ScopedEntity {
   /** The service invalidates affected prepared inputs in the same transaction. */
   revisePrivacy(privacy: MemoryPrivacyConfiguration, expectedRevision: number, at: Date): void {
     invariant(expectedRevision === this.privacyRevision, 'Stale privacy revision');
+    /** Validate explicit retention, purpose provenance and permitted audiences before storing consent. */
     validatePrivacy(privacy);
     assertDate(at, 'at');
     invariant(this.privacyRevision < 2_147_483_647 && this.rowRevision < 2_147_483_647, 'Revision exhausted');
@@ -66,6 +71,7 @@ export class MemoryScope extends ScopedEntity {
     this.updatedAt = new Date(at);
   }
 
+  /** Advance the durable revision before deleting facts so late submissions cannot recreate forgotten content. */
   advanceDeletionFence(expectedRevision: number, at: Date): number {
     invariant(expectedRevision === this.privacyRevision, 'Stale deletion fence');
     assertDate(at, 'at');

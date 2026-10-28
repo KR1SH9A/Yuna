@@ -2,7 +2,10 @@
  * Planned component: Jobs contracts
  * Kind: Plain infrastructure boundary types and serialized record schemas
  * Owner: Platform / Jobs
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Executable routes use conversation-task.contracts.ts, moderation-task.contracts.ts and debate-task.contracts.ts; workers do not accept arbitrary generic task payloads.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Describe task registration, execution claims, controlled input release, persisted results,

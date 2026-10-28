@@ -2,7 +2,10 @@
  * Planned component: LlmModule
  * Kind: Provider capability module
  * Owner: AI worker / LLM
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: LlmService is implemented. apps/ai-worker/ai-worker.module.ts owns its direct configuration and lifetime.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Register LlmService, selected provider SDK configuration and versioned templates.

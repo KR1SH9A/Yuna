@@ -2,7 +2,10 @@
  * Planned component: ReplyPolicy
  * Kind: Pure domain policy
  * Owner: Community
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Direct/silent reply eligibility is implemented in input-normalizer.ts, ConversationService and ReplyDeliveryService. Proactive relevance remains optional.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Evaluate supplied reply eligibility, audience and output restrictions.

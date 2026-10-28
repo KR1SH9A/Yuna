@@ -7,4 +7,8 @@ export default {
   setupFiles: ['<rootDir>/dist/tests/setup/structured-clone.js'],
   // Tests import their APIs explicitly; keep the application namespace free of Jest globals.
   injectGlobals: false,
+  // V8 measures the compiled code; source maps point reports back to the TypeScript owners.
+  coverageProvider: 'v8',
+  collectCoverageFrom: ['dist/src/**/*.js', 'dist/apps/**/*.js', '!**/*.d.ts'],
+  coverageReporters: ['text-summary', 'json-summary', 'lcov'],
 };

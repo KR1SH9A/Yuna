@@ -1,3 +1,4 @@
+/** Store one immutable terminal execution envelope while allowing retained result payloads to be erased. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertNonNegativeInteger, assertUuid, copyJson, invariant, type JsonObject, type ScopedEntityInput } from '../../db/entity-values.js';
@@ -48,6 +49,7 @@ export class TaskResult extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: 'datetime', columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Validate an immutable terminal result envelope independently from later owner acceptance. */
   constructor(input: TaskResultInput) {
     super(input);
     assertUuid(input.taskId);
@@ -87,6 +89,7 @@ export class TaskResult extends ScopedEntity {
     this.updatedAt = new Date(this.createdAt);
   }
 
+  /** Erase retained result data and preserve a pending owner-discard signal when acceptance has not yet occurred. */
   purgePayload(input: { reason: string; mode: 'owner_acknowledged' | 'privacy' | 'retention'; ownerAcknowledged: boolean; now: Date }): void {
     invariant(['owner_acknowledged', 'privacy', 'retention'].includes(input.mode), 'Unknown purge mode');
     invariant(input.mode !== 'owner_acknowledged' || input.ownerAcknowledged, 'Ordinary cleanup requires owner acknowledgment');

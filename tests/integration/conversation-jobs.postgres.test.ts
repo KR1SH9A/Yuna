@@ -1,3 +1,4 @@
+/** Prove restricted worker claims, immutable outcomes and exact budget accounting with real PostgreSQL locks. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -8,6 +9,7 @@ import { createEntitySchemaSql } from '../../src/platform/db/schema-constraints.
 import { temporaryPostgres } from '../helpers/temporary-postgres.js';
 import { GuildInstallation } from '../../src/contexts/administration/entities/guild-installation.entity.js';
 import { GuildSafetyState } from '../../src/contexts/administration/entities/guild-safety-state.entity.js';
+import { UsagePolicy } from '../../src/contexts/administration/entities/usage-policy.entity.js';
 import { ConversationRequest } from '../../src/contexts/community/entities/conversation-request.entity.js';
 import { IntakeEvent } from '../../src/platform/intake/entities/intake-event.entity.js';
 import { createConversationUsagePolicy } from '../../src/platform/usage/conversation-usage.js';
@@ -30,6 +32,8 @@ beforeAll(async () => {
   database.applySchema(`create role yuna_worker login; create role yuna_bot login;
     revoke create on schema public from public; grant usage on schema public to yuna_worker,yuna_bot;`);
   database.applySchema(readFileSync(resolve('src/platform/db/migrations/conversation-worker.sql'), 'utf8'));
+  database.applySchema(readFileSync(resolve('src/platform/db/migrations/004-operating-controls.sql'), 'utf8'));
+  database.applySchema(readFileSync(resolve('src/platform/db/migrations/006-user-quotas.sql'), 'utf8'));
   workerOrm = new MikroORM({ ...database.options, user: 'yuna_worker', entities: [],
     discovery: { warnWhenNoEntities: false }, ensureDatabase: false, logger: () => {} });
   await workerOrm.connect();
@@ -41,7 +45,7 @@ afterAll(async () => {
 }, 30_000);
 
 /** Register complete owner/task graphs using the actual public service and entity transitions. */
-async function fixture(count = 1, cap = 20) {
+async function fixture(count = 1, cap = 20, dailyBudget?: string) {
   serial++;
   const guildId = String(910000000000000000n + BigInt(serial));
   const model = `fixture-model-${serial}`;
@@ -54,7 +58,11 @@ async function fixture(count = 1, cap = 20) {
   await orm.em.fork().transactional(async em => {
     em.persist(installed);
     em.persist(new GuildSafetyState({ ...scope, createdAt: now, changedAt: now, changedBy: { kind: 'system', operation: 'fixture' } }));
-    em.persist(createConversationUsagePolicy(scope, now, model, cap));
+    em.persist(createConversationUsagePolicy(scope, now, model, cap, dailyBudget === undefined ? undefined : {
+      dailyAttemptLimit: cap, dailyBudget: { amount: dailyBudget, currency: 'USD' },
+      prices: [{ provider: 'deepseek', model, version: 'fixture-price-v1', currency: 'USD',
+        inputPerMillion: '1', outputPerMillion: '1', maxInputTokens: 32768, maxOutputTokens: 512 }],
+    }));
     for (let index = 0; index < count; index++) {
       const channelId = '920000000000000001';
       const messageId = String(920000000000001000n + BigInt(index));
@@ -82,6 +90,7 @@ function successfulReply(claim: WorkerClaim): ReplyGenerationResult {
     inputTokens: 10, outputTokens: 5, totalTokens: 15, truncated: false };
 }
 
+/** Claim and start the fixture provider attempt through the restricted worker interface. */
 async function claimAndStart(model: string): Promise<WorkerClaim> {
   const claim = await worker.claimNext('fixture-worker', model);
   assert.ok(claim);
@@ -213,4 +222,62 @@ test('retention erases input/result copies and leaves a durable owner-discard ob
   assert.equal(rows[0]?.result_payload, null);
   assert.equal(rows[0]?.pending_owner_discard, true);
   assert.equal((await tasks.pendingResults(orm.em.fork(), f.scope)).length, 1);
+});
+
+test('monetary admission is atomic and measured settlement frees only the unused price estimate', async () => {
+  const f = await fixture(3, 20, '0.04');
+  const claims = await Promise.all(Array.from({ length: 5 }, (_, index) => worker.claimNext(`money-${index}`, f.model)));
+  const winners = claims.filter((claim): claim is WorkerClaim => claim !== null);
+  assert.equal(winners.length, 1, 'Two conservative reservations would exceed the daily cap');
+  const claim = winners[0]!;
+  await worker.releasePreparedInput(claim);
+  await worker.recordProviderStart(claim);
+  const payload = successfulReply(claim);
+  await worker.recordResult(claim, { outcome: 'success', reason: 'completed', payload });
+  await worker.recordResult(claim, { outcome: 'success', reason: 'duplicate', payload });
+  const rows = await orm.em.fork().execute<{ state: string; actual_cost: string; pricing_version: string }[]>(`
+    select r.state,e.actual_cost,e.pricing_version from usage_reservation r join usage_entry e on e.reservation_id=r.id
+    where r.attempt_id=?`, [claim.attemptId]);
+  assert.equal(rows[0]?.state, 'settled');
+  assert.equal(rows[0]?.actual_cost, '0.000015000000000000');
+  assert.equal(rows[0]?.pricing_version, 'fixture-price-v1');
+  assert.ok(await worker.claimNext('after-settlement', f.model));
+  assert.equal(await worker.claimNext('still-bounded', f.model), null);
+});
+
+test('unknown spend retains its full priced reservation and late response settles the admitted price once', async () => {
+  const f = await fixture(2, 20, '0.04');
+  const claim = await claimAndStart(f.model);
+  await worker.recordResult(claim, { outcome: 'uncertain', reason: 'timeout' });
+  assert.equal(await worker.claimNext('unknown-is-not-free', f.model), null);
+  await orm.em.fork().transactional(async em => {
+    const policy = await em.findOneOrFail(UsagePolicy, f.scope);
+    policy.revise({ schemaVersion: 1, limits: policy.limits, windowRules: policy.windowRules,
+      perAttemptBounds: policy.perAttemptBounds.map(bound => ({ ...bound, pricingVersion: 'fixture-price-v2', inputPerMillion: '2',
+        outputPerMillion: '2', maxCost: '0.06656' })) }, policy.policyRevision, { kind: 'system', operation: 'test-price-change' }, new Date());
+  });
+  assert.equal(await worker.recordResult(claim, { outcome: 'success', reason: 'late', payload: successfulReply(claim) }), 'stale');
+  const usage = await orm.em.fork().execute<{ actual_cost: string; pricing_version: string }[]>(
+    'select actual_cost,pricing_version from usage_entry where attempt_id=?', [claim.attemptId]);
+  assert.equal(usage[0]?.actual_cost, '0.000015000000000000');
+  assert.equal(usage[0]?.pricing_version, 'fixture-price-v1');
+  const result = await orm.em.fork().execute<{ outcome: string }[]>('select outcome from task_result where task_id=?', [claim.taskId]);
+  assert.equal(result[0]?.outcome, 'uncertain', 'Late billing evidence cannot replace the terminal result');
+});
+
+test('enabling a monetary cap refuses unpriced same-day liabilities instead of treating them as zero', async () => {
+  const f = await fixture(2);
+  const first = await claimAndStart(f.model);
+  await worker.recordResult(first, { outcome: 'uncertain', reason: 'lost_response' });
+  await orm.em.fork().transactional(async em => {
+    const policy = await em.findOneOrFail(UsagePolicy, f.scope);
+    const configured = createConversationUsagePolicy(f.scope, new Date(), f.model, 20, {
+      dailyAttemptLimit: 20, dailyBudget: { amount: '10', currency: 'USD' },
+      prices: [{ provider: 'deepseek', model: f.model, version: 'configured-v1', currency: 'USD',
+        inputPerMillion: '1', outputPerMillion: '1', maxInputTokens: 32768, maxOutputTokens: 512 }],
+    });
+    policy.revise({ schemaVersion: 1, limits: configured.limits, windowRules: configured.windowRules,
+      perAttemptBounds: configured.perAttemptBounds }, policy.policyRevision, { kind: 'system', operation: 'enable-budget' }, new Date());
+  });
+  assert.equal(await worker.claimNext('unpriced-liability-blocks', f.model), null);
 });

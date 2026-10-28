@@ -1,3 +1,4 @@
+/** Describe optional fact-bound vectors; embeddings remain disabled for the explicit private-memory route. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertNonNegativeInteger, assertUuid, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -29,6 +30,7 @@ export class FactEmbedding extends ScopedEntity {
   @Property({ type: 'json' }) readonly vector: readonly number[];
   @Property({ type: 'uuid' }) readonly acceptedTaskResultId: string;
 
+  /** Validate an optional vector against its exact fact hash, model, dimensions and acceptance identity. */
   constructor(input: FactEmbeddingInput) {
     super(input);
     assertUuid(input.factId);

@@ -1,3 +1,4 @@
+/** Plain routing, result and timing values shared by the conversation owner and restricted worker. */
 import type { ReplyGenerationResult } from '../../ai/contracts/generation.contracts.js';
 
 /** Routing and lease authority only; payload is disclosed by a separate database operation. */
@@ -32,6 +33,9 @@ export interface ConversationTaskCompletion {
   safetyRevision: number;
   outcome: 'success' | 'failure' | 'uncertain' | 'canceled' | 'expired';
   payload: ReplyGenerationResult | null;
+  /** Existing durable timestamps permit timing reports without retaining extra message data. */
+  resultCreatedAt: Date | string;
+  queueWaitMs: number | null;
 }
 
 export interface ConversationTaskScope { installationId: string; guildId: string }

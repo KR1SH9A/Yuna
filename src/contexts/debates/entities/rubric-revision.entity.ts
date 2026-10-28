@@ -1,3 +1,4 @@
+/** Immutable agreed Debate rubric content, erasable when the consented retention ends. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -22,13 +23,16 @@ export interface RubricRevisionInput extends ScopedEntityInput {
 export class RubricRevision extends ScopedEntity {
   @Property({ type: 'uuid' }) readonly rubricId: string;
   @Property({ type: 'integer' }) readonly revision: number;
-  @Property({ type: 'json' }) readonly criteria: readonly RubricCriterion[];
-  @Property({ type: 'json' }) readonly weights: Readonly<Record<string, string>>;
-  @Property({ type: 'json' }) readonly configurationVersions: Readonly<Record<string, string>>;
-  @Property({ type: 'json' }) readonly outcomeRules: RubricRevisionInput['outcomeRules'];
+  @Property({ type: 'json', nullable: true }) criteria: readonly RubricCriterion[] | null;
+  @Property({ type: 'json', nullable: true }) weights: Readonly<Record<string, string>> | null;
+  @Property({ type: 'json', nullable: true }) configurationVersions: Readonly<Record<string, string>> | null;
+  @Property({ type: 'json', nullable: true }) outcomeRules: RubricRevisionInput['outcomeRules'] | null;
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) readonly activatedAt: Date | null;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly purgeAfter: Date;
+  @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
+  @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Validate immutable score ranges and exact decimal weights before activation. */
   constructor(input: RubricRevisionInput) {
     super(input);
     assertUuid(input.rubricId);
@@ -57,5 +61,13 @@ export class RubricRevision extends ScopedEntity {
     this.outcomeRules = copyJson(input.outcomeRules);
     this.activatedAt = input.activatedAt ? new Date(input.activatedAt) : null;
     this.purgeAfter = new Date(input.purgeAfter);
+  }
+
+  /** Erase free-text rubric content after the owning session and tasks have been invalidated. */
+  purgePayload(reason: string, at: Date): void {
+    assertDate(at, 'at'); invariant(reason.length > 0 && reason.length <= 128, 'Invalid rubric purge reason');
+    if (this.payloadPurgedAt) return;
+    this.criteria = null; this.weights = null; this.configurationVersions = null; this.outcomeRules = null;
+    this.payloadPurgedAt = new Date(at); this.purgeReason = reason;
   }
 }

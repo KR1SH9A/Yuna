@@ -2,7 +2,10 @@
  * Planned component: RecoveryHandlers
  * Kind: Scheduled entry points
  * Owner: Bot application
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: bot.module.ts wires owner maintenance loops; task services recover restricted attempts and feature owners reconcile external effects. There is no second scheduler.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Start bounded recovery batches; business owners retain recovery decisions.

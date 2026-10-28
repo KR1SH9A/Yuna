@@ -1,3 +1,4 @@
+/** Start explicit database preparation with administrator configuration and safe terminal diagnostics. */
 import { prepareDatabase } from '../../src/platform/db/migrations/migrate.js';
 
 // Explicit executable only: runtime bot/worker entrypoints never import or invoke setup.

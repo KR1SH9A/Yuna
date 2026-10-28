@@ -1,3 +1,4 @@
+/** Validate role-specific startup settings; policy files contain rules/limits and environment variables contain secrets. */
 import { assertDiscordId, assertNonNegativeInteger, invariant } from '../db/entity-values.js';
 
 /** A caller-supplied snapshot; bootstrap may pass process.env, tests pass isolated maps. */
@@ -6,7 +7,7 @@ export type RuntimeEnvironment = 'development' | 'test' | 'production';
 type AdapterMode = 'fake' | 'live';
 
 export type DiscordConfig = Readonly<{ mode: 'fake' }> | Readonly<{
-  mode: 'live'; token: string; guildId: string; replyModel: string;
+  mode: 'live'; token: string; guildId: string; replyModel: string; jevModel?: string;
 }>;
 export type ProviderConfig = Readonly<{ mode: 'fake' }> | Readonly<{
   mode: 'live';
@@ -20,6 +21,7 @@ export interface BotRuntimeConfig {
   readonly environment: RuntimeEnvironment;
   readonly databaseUrl: string;
   readonly discord: DiscordConfig;
+  readonly policyFile?: string;
 }
 
 export interface WorkerRuntimeConfig {
@@ -113,15 +115,20 @@ export function loadBotConfig(env: EnvironmentVariables): BotRuntimeConfig {
   }
   const discord: DiscordConfig = mode === 'fake'
     ? Object.freeze({ mode })
-    : Object.freeze({ mode, token: readText(env, 'DISCORD_BOT_TOKEN'), guildId, replyModel: readText(env, 'REPLY_MODEL') });
+    : Object.freeze({ mode, token: readText(env, 'DISCORD_BOT_TOKEN'), guildId, replyModel: readText(env, 'REPLY_MODEL'),
+      ...(env.JEV_MODEL === undefined ? {} : { jevModel: readText(env, 'JEV_MODEL') }) });
+  const policyFile = mode === 'live' ? env.YUNA_CONFIG_FILE : undefined;
+  invariant(policyFile === undefined || (policyFile.length > 0 && policyFile.length <= 4096 && !/[\p{Cc}]/u.test(policyFile)),
+    'Invalid configuration: YUNA_CONFIG_FILE must be a bounded file path');
   return Object.freeze({
     role: 'bot', environment, databaseUrl: readDatabaseUrl(env, 'BOT_DATABASE_URL'), discord,
+    ...(policyFile === undefined ? {} : { policyFile }),
   });
 }
 
 /**
  * Validate worker-only settings without reading Discord credentials or opening connections.
- * DeepSeek mode is explicit; Jev defaults to disabled until its task route is implemented.
+ * Provider modes are explicit; Jev defaults to disabled until the operator configures assessment.
  * Database grants and process-level secret isolation remain deployment responsibilities.
  */
 export function loadWorkerConfig(env: EnvironmentVariables): WorkerRuntimeConfig {
@@ -140,4 +147,11 @@ export function loadWorkerConfig(env: EnvironmentVariables): WorkerRuntimeConfig
       : readProviderConfig(env, jevMode, 'OPENROUTER_API_KEY', 'JEV_MODEL',
         'https://openrouter.ai/api/alpha/decisions'),
   });
+}
+
+/** Health probes need database access and the server identity, never Discord or provider credentials. */
+export function loadHealthConfig(env: EnvironmentVariables): { role: 'bot'; databaseUrl: string; guildId: string } {
+  const guildId = readText(env, 'DISCORD_GUILD_ID');
+  try { assertDiscordId(guildId); } catch { throw new Error('Invalid health-check guild ID'); }
+  return { role: 'bot', databaseUrl: readDatabaseUrl(env, 'BOT_DATABASE_URL'), guildId };
 }

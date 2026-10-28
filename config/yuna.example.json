@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "usage": {
+    "dailyAttemptLimit": 1000,
+    "dailyBudget": null,
+    "prices": [],
+    "userDefaults": {
+      "dailyAttemptLimit": 10,
+      "dailyBudget": null
+    }
+  },
+  "moderation": {
+    "enabled": true,
+    "policy": {
+      "rules": [
+        {
+          "id": "harassment",
+          "version": "starter-v1",
+          "description": "Do not direct repeated abuse, degrading slurs, or targeted intimidation at another person. Criticism of ideas and good-faith disagreement alone are allowed.",
+          "enabled": true
+        },
+        {
+          "id": "threats",
+          "version": "starter-v1",
+          "description": "Do not threaten credible violence or encourage physical harm toward a person or group. Clear fictional, educational, or reported quotations without endorsement are excluded.",
+          "enabled": true
+        },
+        {
+          "id": "privacy",
+          "version": "starter-v1",
+          "description": "Do not publish another person\u2019s nonpublic contact details, home address, credentials, or other sensitive identifying information without their consent.",
+          "enabled": true
+        },
+        {
+          "id": "scams",
+          "version": "starter-v1",
+          "description": "Do not solicit credentials, impersonate trusted staff to defraud members, or make deceptive payment or investment solicitations. A suspicious-looking link alone is insufficient evidence.",
+          "enabled": true
+        }
+      ],
+      "requiredEvidence": [
+        {
+          "ruleId": "harassment",
+          "originalBody": true,
+          "originalMedia": false,
+          "establishedAuthor": true
+        },
+        {
+          "ruleId": "threats",
+          "originalBody": true,
+          "originalMedia": false,
+          "establishedAuthor": true
+        },
+        {
+          "ruleId": "privacy",
+          "originalBody": true,
+          "originalMedia": false,
+          "establishedAuthor": true
+        },
+        {
+          "ruleId": "scams",
+          "originalBody": true,
+          "originalMedia": false,
+          "establishedAuthor": true
+        }
+      ],
+      "exclusions": [
+        {
+          "id": "context",
+          "description": "Exclude clearly attributed quotations, incident reports, educational discussion, and consensual fictional roleplay when the author does not endorse the prohibited behavior. If context is unclear, return uncertainty.",
+          "ruleIds": [
+            "harassment",
+            "threats",
+            "privacy",
+            "scams"
+          ]
+        }
+      ],
+      "evaluationConfiguration": {
+        "schemaVersion": 1,
+        "observationModel": "env:REPLY_MODEL",
+        "assessmentModel": "env:JEV_MODEL",
+        "promptVersion": "moderation-starter-v1",
+        "decisionThresholds": {
+          "minimumConfidence": 0.9,
+          "yesThreshold": 0.95,
+          "noThreshold": 0.05
+        }
+      },
+      "actionMapping": [
+        {
+          "ruleId": "harassment",
+          "supportedDisposition": "violation",
+          "action": "warning",
+          "deleteMessageSeconds": 0
+        },
+        {
+          "ruleId": "harassment",
+          "supportedDisposition": "suspicion",
+          "action": "none",
+          "deleteMessageSeconds": 0
+        },
+        {
+          "ruleId": "threats",
+          "supportedDisposition": "violation",
+          "action": "warning",
+          "deleteMessageSeconds": 0
+        },
+        {
+          "ruleId": "threats",
+          "supportedDisposition": "suspicion",
+          "action": "none",
+          "deleteMessageSeconds": 0
+        },
+        {
+          "ruleId": "privacy",
+          "supportedDisposition": "violation",
+          "action": "warning",
+          "deleteMessageSeconds": 0
+        },
+        {
+          "ruleId": "privacy",
+          "supportedDisposition": "suspicion",
+          "action": "none",
+          "deleteMessageSeconds": 0
+        },
+        {
+          "ruleId": "scams",
+          "supportedDisposition": "violation",
+          "action": "warning",
+          "deleteMessageSeconds": 0
+        },
+        {
+          "ruleId": "scams",
+          "supportedDisposition": "suspicion",
+          "action": "none",
+          "deleteMessageSeconds": 0
+        }
+      ]
+    }
+  },
+  "retention": {
+    "payloadDays": 1,
+    "metadataDays": 7,
+    "evidenceDays": 30,
+    "accountingDays": 30
+  },
+  "features": {
+    "memory": true,
+    "debates": true
+  }
+}

@@ -1,8 +1,10 @@
 # Yuna DTO and module reference
 
-Yuna keeps request/response shapes next to the feature that owns the operation. This reference maps the comment-only DTO files to their services and explains validation, trusted identity, module exports and persistence ownership. The [entity model plan](DATA_MODEL_REFERENCE.md) is authoritative for target stored records and their ownership; the [architecture plan](ARCHITECTURE_PLAN.md) covers durable execution and recovery.
+Yuna keeps request/response shapes next to the feature that owns each operation. This reference maps current executable boundaries and preserves catalogs for optional future extensions. The [entity reference](DATA_MODEL_REFERENCE.md) defines stored-record ownership; the [architecture reference](ARCHITECTURE_PLAN.md) covers durable execution and recovery.
 
-These files describe the design. They do not declare executable DTO classes, validators, NestJS providers or database models yet. Memory, Debates and optional governance remain staged.
+Runtime contracts now cover Administration, Community/Knowledge, original-message Moderation, explicit private Memory, consented Debates and per-user usage. Discord ingress uses `src/discord/contracts.ts` plus the command-group normalizers; AI input/output lives under `src/ai/contracts`, and restricted owner-specific task stores live under `src/platform/jobs`. Services validate values and return bounded plain DTOs. Bot/worker composition is ordinary TypeScript, not NestJS. Optional governance DTOs, artifact contracts and versioned embedding input/results are now executable component boundaries; command, persistence and worker integration are not enabled merely by importing them. Legacy generic-routing catalogs remain navigation references.
+
+`DiscordCommandResponse` is either a bounded private string or a string with one bounded UTF-8 JSON attachment. Debate scope/result reviews use the attachment to preserve the full rubric, model, participants, paying initiator, retention and publication scope rather than silently truncating consent material. The Gateway keeps SDK objects/tokens private, defers ephemerally and disables mentions on every response.
 
 ## Find the right file
 
@@ -67,7 +69,7 @@ Normalized message DTOs include both trusted source metadata and untrusted conte
 | Prepared AI input / provider output | Exact capability schema/version, limits and required result structure | Business interpretation, expected operation, current evidence/privacy and action authorization |
 | Public response | Allowlisted fields, bounded content and coherent status/outcome | Which audience may receive those fields |
 
-Wire validation into Discord handlers and queue consumers explicitly. An HTTP validation pipeline is not the specification for these entry points. TypeScript annotations and DTO filenames provide no runtime checks on their own. Select a validation library when runtime dependencies are chosen, keeping one authoritative schema/validation definition for each boundary shape.
+Wire validation into Discord handlers and queue consumers explicitly. An HTTP validation pipeline is not the specification for these entry points. TypeScript annotations and DTO filenames provide no runtime checks on their own. Reuse the existing runtime validators and keep one authoritative validation definition for each boundary shape; add a library only when a concrete need justifies it.
 
 Never spread raw command options into trusted context or serialize an ORM entity directly. Reject unexpected identity/authority fields. Revalidate retained serialized input at its versioned boundary. Provider-schema success does not make a finding correct or authorize a sanction.
 
@@ -99,20 +101,20 @@ The files below contain fields, producer/consumer responsibilities and validatio
 | [guild-safety.dto.ts](../src/contexts/administration/dto/guild-safety.dto.ts) | `PauseGuildRequestDto`, `ResumeGuildRequestDto`, `GuildSafetyResponseDto` | Arguments into `SafetyService.pauseGuild` / `resumeGuild`; minimal safety display snapshot out. Internal `SafetyGate` remains a separate concurrency binding. |
 | [governance.dto.ts](../src/contexts/administration/dto/governance.dto.ts) — optional | `ProposePlanRequestDto`, `ApprovePlanRequestDto`, `EnrollCustodianRequestDto`, `GovernancePlanResponseDto`, `CustodianEnrollmentResponseDto` | Existing optional `GovernanceService.proposePlan`, `approvePlan`, `enrollCustodian` interaction inputs/outputs. Approval evidence and candidate acceptance are independently verified. |
 
-### Memory — staged
+### Memory — explicit private submissions
 
 | File | DTOs | Service operations and direction |
 | --- | --- | --- |
 | [memory-consent.dto.ts](../src/contexts/memory/dto/memory-consent.dto.ts) | `SetMemoryConsentRequestDto`, `MemoryConsentResponseDto` | Arguments into `MemoryService.setConsent`; effective consent display values out. A display response is not a disclosure authorization. |
-| [inspect-memory.dto.ts](../src/contexts/memory/dto/inspect-memory.dto.ts) | `OwnMemoryFactsResponseDto` | Private response from `inspectOwnFacts`; verified owner and selected guild are supplied separately, so there is no empty request DTO. |
+| [inspect-memory.dto.ts](../src/contexts/memory/dto/inspect-memory.dto.ts) | `InspectMemoryRequestDto`, `OwnMemoryFactsResponseDto`, `RememberMemoryRequestDto`, `RememberMemoryResponseDto` | Bounded private inspect/search/pagination and explicit `remember` arguments/results. Verified owner and installation are supplied separately. |
 | [forget-memory.dto.ts](../src/contexts/memory/dto/forget-memory.dto.ts) | `ForgetMemoryRequestDto`, `MemoryDeletionResponseDto` | Arguments into `forget`; deletion identity and current cleanup progress out, without copied deleted content. |
 
-### Debates — staged
+### Debates — consented explicit submissions
 
 | File | DTOs | Service operations and direction |
 | --- | --- | --- |
-| [debate-session.dto.ts](../src/contexts/debates/dto/debate-session.dto.ts) | `ProposeDebateSessionRequestDto`, `RecordDebateConsentRequestDto`, `CancelDebateSessionRequestDto`, `DebateSessionResponseDto` | Arguments into `DebateService.proposeSession`, `recordConsent`, `cancelSession`; authorized session/scope/progress view out. |
-| [debate-result.dto.ts](../src/contexts/debates/dto/debate-result.dto.ts) | `DebateResultResponseDto` | Authorized result view from the `publishResult` flow. Scoring input remains stored AI results and the internal frozen evaluation binding. |
+| [debate-session.dto.ts](../src/contexts/debates/dto/debate-session.dto.ts) | `ProposeDebateSessionRequestDto`, `DebateSessionResponseDto` and runtime action validators | `proposeSession`, `recordConsent`, `startSession`, `appendEntry`, `freezeTranscript`, `readSession`, `cancelSession`; only invited participants receive the full exact scope. |
+| [debate-result.dto.ts](../src/contexts/debates/dto/debate-result.dto.ts) | `DebateResultResponseDto` | Authorized result from `readResult`; automatic publication belongs to `DebatePublicationService`. Frozen task results feed deterministic owner scoring; publication state remains distinct from accepted scoring. |
 
 ### Discord and Jobs
 
@@ -125,29 +127,29 @@ The files below contain fields, producer/consumer responsibilities and validatio
 
 Local write methods join/create short transactions without external I/O. Dispatch/reconciliation orchestrators enter outside an active transaction. Authorized owner reads are added for concrete staff/status workflows; internal completion outcomes are not human-facing views.
 
-The configuration writers proposed in the architecture plan, such as policy publication and channel-setting mutation, still require their complete operation contracts when added to the scaffold. This organizational change makes already-described use cases visible; it does not silently add those operations or activate staged features.
+ConfigurationService now exposes revision-bound status, channel settings and approved operator policy application through trusted caller/current-native checks. Moderation policy publication joins that transaction; feature availability is supplied by composition. Knowledge uses fresh knowledge.manage authority, Memory derives the private subject from the caller, and Debate consent binds the exact displayed scope hash.
 
 ID-only task signals resolve through `TaskService.readTaskDescriptor` in the bot and `WorkerTaskStore.readTaskDescriptor` in the worker. This minimal stored routing view lets consumers select a known owner/handler without querying private tables, reading payloads or creating an attempt merely to discover compatibility. Claims, disclosure and result acceptance still use their separate gates.
 
 ## Public module providers
 
-These are planned dependency-injection exports. Importing a DTO/type is separate from injecting a service. Bot composition must not re-register a private provider to bypass a missing module export.
+The following catalog records logical public boundaries. Some module files are design comments rather than dependency-injection classes; executable composition directly constructs the named owners. Importing a DTO/type does not grant permission or expose a private repository.
 
 | Module | Public provider exports | Private implementation |
 | --- | --- | --- |
-| [ModerationModule](../src/contexts/moderation/moderation.module.ts) | `ModerationService`, `StaffModerationService`, `BanService`, `WarningService`; optional `KickService` | Policies, seven entity registrations and owner-controlled persistence queries |
+| [ModerationModule](../src/contexts/moderation/moderation.module.ts) | `ModerationService`, `ModerationWorkflowService`, `StaffModerationService`, `ActionExecutionService`; kick remains optional | Policies, seven entity registrations and owner-controlled persistence queries |
 | [CommunityModule](../src/contexts/community/community.module.ts) | `ConversationService`, `KnowledgeService`, `ReplyDeliveryService` | Reply policy, four entity registrations and owner-controlled persistence queries |
-| [AdministrationModule](../src/contexts/administration/administration.module.ts) | `AuthorityService`, `SafetyService`, `GuildLifecycleService`; optional `GovernanceService` | Authority policy, baseline/optional entity registrations and persistence |
-| [MemoryModule](../src/contexts/memory/memory.module.ts) — staged | `MemoryService` | Consent/storage policy, four entity registrations and persistence |
-| [DebatesModule](../src/contexts/debates/debates.module.ts) — staged | `DebateService` | Scoring policy, six entity registrations and persistence |
-| [DiscordModule](../src/discord/discord.module.ts) | `DiscordInputNormalizer`, `DiscordStateReader`, `DiscordActions` | SDK client/connection and transport mapping |
-| [JobsModule](../src/platform/jobs/jobs.module.ts) | Bot role: `TaskService`, `TaskRecoveryService`, `OutboxRelay`; worker role: restricted `WorkerTaskStore` | Jobs records, persistence and credentials restricted for each role |
+| [AdministrationModule](../src/contexts/administration/administration.module.ts) | `AuthorityService`, `SafetyService`, `GuildLifecycleService`, `ConfigurationService`, `RemovalService`; optional `GovernanceService` | Authority policy, baseline/optional entity registrations and persistence |
+| [MemoryModule](../src/contexts/memory/memory.module.ts) | `MemoryService` | Consent/storage policy and three active records; embeddings remain optional |
+| [DebatesModule](../src/contexts/debates/debates.module.ts) | `DebateService`, `DebatePublicationService` | Scoring policy, six entity registrations and persistence |
+| [Discord adapter](../src/discord/discord.module.ts) | `DiscordGateway`, normalization functions, narrow moderation/debate transports | SDK client/connection, current native facts and transport mapping |
+| [Jobs composition](../src/platform/jobs/jobs.module.ts) | Bot: conversation/moderation/debate task services; worker: their restricted stores | SQL recovery, notification hints and durable scans; generic relay/coordinator catalogs remain design references |
 
 Effect services are exported because the bot dispatch/recovery handlers consume their operations. Their methods still enforce current owner gates; an export is not permission to perform an unchecked effect. AI provider modules remain worker-only, and the static task lookup is not an injectable registry service.
 
 ## Persistence without extra layers
 
-Feature modules register their own entities. Their services coordinate native ORM repositories/query APIs within the caller's fresh context and short transaction. Policies receive values, handlers call public services, and other contexts use the owning service API. The shared database module configures infrastructure; it does not become a central catalog of business repositories.
+The composition-only metadata registry selects enabled entities. Feature services own their records and coordinate native ORM repositories/query APIs within the caller's fresh context and short transaction. Policies receive values, handlers call public services, and other contexts use the owning service API. The shared database module configures infrastructure; it does not become a central catalog of business repositories.
 
 Create a named feature-owned repository when repeated or complex queries deserve a reusable home—for example, a nontrivial due-action selection used by multiple operations. Give it query/persistence responsibilities, not provider calls, authorization decisions or its own nested commits. There is no custom repository per entity and no generic base repository in this change.
 

@@ -12,6 +12,7 @@ export interface ScopedEntityInput extends RecordEntityInput {
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export interface JsonObject { [key: string]: JsonValue }
 
+/** Stop a transition immediately when its required condition is false. */
 export function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -22,14 +23,17 @@ export function assertDiscordId(value: string): void {
   invariant(BigInt(value) <= 18_446_744_073_709_551_615n, 'Discord ID exceeds uint64');
 }
 
+/** Reject malformed record identifiers before they reach typed UUID columns. */
 export function assertUuid(value: string): void {
   invariant(typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value), 'Invalid UUID');
 }
 
+/** Require exact nonnegative integers so revisions and counts cannot lose precision. */
 export function assertNonNegativeInteger(value: number, label: string): void {
   invariant(Number.isSafeInteger(value) && value >= 0, `${label} must be a nonnegative safe integer`);
 }
 
+/** Reject invalid or non-Date timestamps before storing lifecycle decisions. */
 export function assertDate(value: Date, label: string): void {
   invariant(value instanceof Date && Number.isFinite(value.getTime()), `${label} must be a valid date`);
 }
@@ -37,6 +41,7 @@ export function assertDate(value: Date, label: string): void {
 /** Detach caller-owned JSON and reject values PostgreSQL JSONB cannot faithfully preserve. */
 export function copyJson<T>(value: T): T {
   const ancestors = new Set<object>();
+  /** Walk JSON recursively, rejecting cycles, unsupported values and objects that PostgreSQL cannot preserve. */
   function validate(item: unknown): void {
     if (item === null || typeof item === 'string' || typeof item === 'boolean') return;
     if (typeof item === 'number') {

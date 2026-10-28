@@ -2,7 +2,10 @@
  * Planned component: CommunityModule
  * Kind: NestJS composition module
  * Owner: Community
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: ConversationService, KnowledgeService and ReplyDeliveryService are wired directly in apps/bot/bot.module.ts. No framework module is required.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility: Register ConversationService, KnowledgeService, ReplyDeliveryService and
  * ReplyPolicy, with private ConversationRequest, ReplyDelivery, ChannelReplySettings and

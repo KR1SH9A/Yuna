@@ -1,0 +1,20 @@
+# Run only the restricted SQL worker and provider adapters; never give it the Discord token.
+[Unit]
+Description=Yuna provider worker
+After=network-online.target postgresql.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=__YUNA_USER__
+WorkingDirectory=__YUNA_DIRECTORY__
+ExecStart=__NODE_EXECUTABLE__ --env-file=.env.worker dist/apps/ai-worker/cli.js
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+KillSignal=SIGTERM
+NoNewPrivileges=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+[Install]
+WantedBy=multi-user.target

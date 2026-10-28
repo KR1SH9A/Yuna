@@ -2,7 +2,10 @@
  * Planned component: CapabilityResultContracts
  * Kind: Shared technical result vocabulary
  * Owner: AI contracts
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Generation, observation and assessment have executable route-specific contracts. This generic envelope remains an optional design reference.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Define explicit execution outcomes while retaining capability-specific payloads.

@@ -2,7 +2,10 @@
  * Planned component: UsageModule
  * Kind: NestJS infrastructure composition module
  * Owner: Platform / Usage
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: UsageService and UserUsageService are implemented; task SQL owns atomic reservation/settlement. Composition roots wire the owners directly.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Wire atomic reservations and provider-attempt cost accounting.

@@ -1,3 +1,4 @@
+/** Test database resource lifecycle and safe configuration handling with controlled factories. */
 import assert from 'node:assert/strict';
 import { afterEach, jest, test } from '@jest/globals';
 import { MikroORM, EntityManager } from '@mikro-orm/postgresql';

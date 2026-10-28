@@ -2,7 +2,10 @@
  * Planned component: OutboxRelay
  * Kind: Transactional Outbox publisher
  * Owner: Platform / Jobs
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Committed PostgreSQL notification triggers plus task-wakeup.ts and fallback scans provide the current delivery path. A separate external-queue relay is optional.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Publish committed work/completion/invalidation signals to the configured delivery path while

@@ -2,7 +2,10 @@
  * Planned component: CompletionHandlers
  * Kind: Stored-result router
  * Owner: Bot application
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: bot.module.ts invokes ConversationService.acceptReplyResults, ModerationWorkflowService.runMaintenance and DebateService.runMaintenance. These owners read durable completions directly.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Route a durable AI result to the context that requested it.

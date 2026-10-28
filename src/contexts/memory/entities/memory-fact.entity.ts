@@ -1,3 +1,4 @@
+/** Store immutable explicitly accepted personal facts with exact subject, source and expiry bindings. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -51,6 +52,7 @@ export class MemoryFact extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz' }) readonly acceptedAt: Date;
   @Property({ type: Date, columnType: 'timestamptz' }) readonly expiresAt: Date;
 
+  /** Validate and copy one exact accepted fact; replacing it requires a new record and erasure of the old one. */
   constructor(input: MemoryFactInput) {
     super(input);
     assertUuid(input.scopeId);

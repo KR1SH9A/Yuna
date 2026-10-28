@@ -1,3 +1,4 @@
+/** Describe an optional multi-custodian authorization proposal; this staged record never directly authorizes a Discord sanction. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type JsonObject, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -52,6 +53,7 @@ export class ActionPlan extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Validate and snapshot the proposed operations, excluded approvers and deadlines before the plan can collect approvals. */
   constructor(input: ActionPlanInput) {
     super(input);
     assertDiscordId(input.requesterId);
@@ -103,6 +105,7 @@ export class ActionPlan extends ScopedEntity {
     this.advanceRevision(input.at);
   }
 
+  /** Invalidate a still-pending proposal or approval with a bounded reason; consumed authority is never silently reused. */
   invalidate(reasonCode: string, at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     if (this.status === 'invalidated') return;
@@ -115,6 +118,7 @@ export class ActionPlan extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Close a pending record after its expiry time; calling expiry before that deadline is rejected. */
   expire(at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     if (this.status === 'expired') return;
@@ -124,6 +128,7 @@ export class ActionPlan extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Erase expired authorization content after it can no longer authorize work, preserving its minimal lifecycle record. */
   purgePayload(reasonCode: string, at: Date): void {
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');
     assertDate(at, 'at');
@@ -137,6 +142,7 @@ export class ActionPlan extends ScopedEntity {
     this.advanceRevision(at);
   }
 
+  /** Advance optimistic concurrency metadata after a valid local state transition. */
   private advanceRevision(at: Date): void {
     this.rowRevision += 1;
     this.updatedAt = new Date(at);

@@ -2,7 +2,10 @@
  * Planned component: NormalizedInteractionDto
  * Kind: Normalized interaction envelope DTO
  * Owner: Discord boundary
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: Current commands use route-specific normalized command unions in input-normalizer.ts and the knowledge/memory/debate command modules.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Describe a verified interaction before a known feature operation parses its arguments.

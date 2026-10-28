@@ -1,9 +1,11 @@
+/** Verify that a worker discloses input and calls a provider only after durable claim/start gates. */
 import assert from 'node:assert/strict';
 import { jest, test } from '@jest/globals';
 import { AiTaskHandlers } from '../../apps/ai-worker/task.handlers.js';
 import { LlmError, type LlmService } from '../../src/ai/llm/llm.service.js';
 import type { ReplyGenerationResult } from '../../src/ai/contracts/generation.contracts.js';
 import type { WorkerTaskStore, WorkerClaim, ConversationTaskOutcome } from '../../src/platform/jobs/worker-task.store.js';
+import type { LatencySample } from '../../src/platform/runtime/latency.js';
 
 type Store = Pick<WorkerTaskStore, 'claimNext' | 'releasePreparedInput' | 'recordProviderStart' | 'recordResult'>;
 const generated: ReplyGenerationResult = Object.freeze({ text: 'Hello!', providerRequestId: 'fixture-provider-request',
@@ -13,19 +15,24 @@ const generated: ReplyGenerationResult = Object.freeze({ text: 'Hello!', provide
 function harness() {
   const events: string[] = [];
   const outcomes: ConversationTaskOutcome[] = [];
-  const claim: WorkerClaim = { taskId: 'task', attemptId: 'attempt', generation: 1, executorId: 'fixture-executor',
+  const samples: LatencySample[] = [];
+  const claim: WorkerClaim = { taskId: '11111111-1111-4111-8111-111111111111', attemptId: 'attempt', generation: 1, executorId: 'fixture-executor',
     deadline: new Date(Date.now() + 30_000).toISOString(), leaseUntil: new Date(Date.now() + 20_000).toISOString(),
     kind: 'community.generate', schemaVersion: 1, model: 'fixture-model', promptVersion: 'conversation-v1' };
   const input = { text: 'Hello', previousReply: 'Earlier reply', maxOutputTokens: 512 };
   const store: Store = {
+    /** Return the fixture claim and record that the worker attempted to acquire work. */
     async claimNext(executorId, model) {
       events.push('claim');
       assert.equal(executorId, claim.executorId);
       assert.equal(model, claim.model);
       return claim;
     },
+    /** Simulate the input-disclosure gate and return only this test's prepared input. */
     async releasePreparedInput(actual) { events.push('release'); assert.equal(actual, claim); return input; },
+    /** Record the simulated durable start checkpoint before provider I/O. */
     async recordProviderStart(actual) { events.push('start'); assert.equal(actual, claim); return true; },
+    /** Capture the worker outcome or inject this scenario's storage failure. */
     async recordResult(actual, outcome) {
       events.push('result');
       assert.equal(actual, claim);
@@ -34,6 +41,7 @@ function harness() {
     },
   };
   const llm: Pick<LlmService, 'generateReply'> = {
+    /** Return or delay a deterministic generation result without making a provider request. */
     async generateReply(actual, signal) {
       events.push('provider');
       assert.equal(actual, input);
@@ -41,8 +49,8 @@ function harness() {
       return generated;
     },
   };
-  const handler = new AiTaskHandlers(store, llm, claim.executorId, claim.model, 1_000);
-  return { handler, store, llm, claim, input, events, outcomes };
+  const handler = new AiTaskHandlers(store, llm, claim.executorId, claim.model, 1_000, sample => { samples.push(sample); });
+  return { handler, store, llm, claim, input, events, outcomes, samples };
 }
 
 test('an already canceled worker never claims or discloses a task', async () => {
@@ -163,6 +171,7 @@ test('successful generation followed by result persistence failure never reissue
   fixture.store.recordResult = async () => { fixture.events.push('result'); throw failure; };
   await assert.rejects(fixture.handler.runOne(new AbortController().signal), error => error === failure);
   assert.deepEqual(fixture.events, ['claim', 'release', 'start', 'provider', 'result']);
+  assert.deepEqual(fixture.samples, []);
 });
 
 test('a failure to persist uncertain provider outcomes also propagates without a second attempt', async () => {
@@ -172,6 +181,23 @@ test('a failure to persist uncertain provider outcomes also propagates without a
   fixture.store.recordResult = async () => { fixture.events.push('result'); throw failure; };
   await assert.rejects(fixture.handler.runOne(new AbortController().signal), error => error === failure);
   assert.deepEqual(fixture.events, ['claim', 'release', 'start', 'provider', 'result']);
+  assert.deepEqual(fixture.samples, []);
+});
+
+test('provider timing is reported only after durable result persistence has resolved', async () => {
+  const fixture = harness();
+  const record = fixture.store.recordResult;
+  fixture.store.recordResult = async (...args) => {
+    assert.deepEqual(fixture.samples, []);
+    return record(...args);
+  };
+  assert.equal(await fixture.handler.runOne(new AbortController().signal), true);
+  assert.equal(fixture.samples.length, 1);
+  assert.deepEqual({ ...fixture.samples[0], durationMs: 0 }, {
+    stage: 'provider', taskId: fixture.claim.taskId, durationMs: 0, outcome: 'success',
+  });
+  assert.ok(fixture.samples[0]!.durationMs >= 0);
+  assert.ok(!JSON.stringify(fixture.samples).includes('Hello'));
 });
 
 test('stale result acceptance ends the attempt and does not trigger another generation', async () => {

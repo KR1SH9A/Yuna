@@ -2,7 +2,10 @@
  * Planned component: AdministrationModule
  * Kind: NestJS composition module
  * Owner: Administration
- * Status: Design scaffold only; not implemented.
+ * Status: Navigation/design reference; runtime ownership is described below.
+ *
+ * Current implementation: AuthorityService, SafetyService, ConfigurationService, GuildLifecycleService and RemovalService are wired directly in apps/bot/bot.module.ts.
+ * The remaining planned catalog is not an additional required implementation.
  *
  * Responsibility:
  * Register AuthorityService, AuthorityPolicy, SafetyService and GuildLifecycleService with

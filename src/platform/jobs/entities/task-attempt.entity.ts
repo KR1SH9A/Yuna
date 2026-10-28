@@ -1,3 +1,4 @@
+/** Track one leased execution attempt from input release through provider start and observed completion. */
 import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertNonNegativeInteger, assertUuid, invariant, type ScopedEntityInput } from '../../db/entity-values.js';
@@ -41,6 +42,7 @@ export class TaskAttempt extends ScopedEntity {
   @Property({ type: 'integer', concurrencyCheck: true }) rowRevision = 1;
   @Property({ type: 'datetime', columnType: 'timestamptz' }) updatedAt: Date;
 
+  /** Bind an attempt to its reserved usage, executor, generation and initial lease before work starts. */
   constructor(input: TaskAttemptInput) {
     super(input);
     assertUuid(input.taskId);
@@ -69,6 +71,7 @@ export class TaskAttempt extends ScopedEntity {
     invariant(this.state !== 'finished' && this.state !== 'fenced' && now < this.leaseUntil, 'Attempt has lost its lease');
   }
 
+  /** Extend only the live current attempt lease; expired authority cannot be revived by renewal. */
   renewLease(generation: number, leaseUntil: Date, now: Date): void {
     this.assertAuthority(generation, now);
     assertDate(leaseUntil, 'Renewed lease');
@@ -77,6 +80,7 @@ export class TaskAttempt extends ScopedEntity {
     this.leaseUntil = new Date(leaseUntil);
   }
 
+  /** Record the single disclosure of prepared input while the attempt still owns execution authority. */
   recordInputRelease(generation: number, now: Date): void {
     this.assertAuthority(generation, now);
     invariant(this.state === 'claimed', 'Input may be released once per attempt');
@@ -85,6 +89,7 @@ export class TaskAttempt extends ScopedEntity {
     this.state = 'released';
   }
 
+  /** Record external execution only after input has been released to the current attempt. */
   recordProviderStart(generation: number, now: Date): void {
     this.assertAuthority(generation, now);
     invariant(this.state === 'released', 'Provider execution requires released input');
@@ -93,6 +98,7 @@ export class TaskAttempt extends ScopedEntity {
     this.state = 'executing';
   }
 
+  /** Finish the current attempt with either observed success or a bounded failure classification. */
   finish(generation: number, now: Date, failure?: { classification: AttemptFailureClass; code: string }, providerRequestId?: string): void {
     this.assertAuthority(generation, now);
     if (failure !== undefined) {
@@ -120,6 +126,7 @@ export class TaskAttempt extends ScopedEntity {
     this.finishedAt = new Date(now);
   }
 
+  /** Advance the bounded row revision and update time so competing writes can detect stale state. */
   private advanceRevision(now: Date): void {
     assertDate(now, 'Update time');
     invariant(this.rowRevision < 2_147_483_647, 'Row revision exhausted');

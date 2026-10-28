@@ -1,3 +1,4 @@
+/** Open and close the configured runtime database role without creating schema or escalating privileges. */
 import { MikroORM, type Options } from '@mikro-orm/postgresql';
 import type { BotRuntimeConfig, WorkerRuntimeConfig } from '../config/runtime-config.js';
 import type { RuntimeResource } from '../runtime/application.js';
@@ -22,10 +23,12 @@ export function createDatabaseResource(config: Pick<BotRuntimeConfig | WorkerRun
 
   return {
     name: 'database',
+    /** Return the connection only after startup has proved database readiness and before shutdown starts. */
     getOrm() {
       if (!orm || !ready || stopped) throw new Error('Database is not ready');
       return orm;
     },
+    /** Connect with the configured restricted role and prove readiness without creating schema or logging credentials. */
     start(signal) {
       if (stopped) return Promise.reject(new Error('Database resource has already stopped'));
       starting ??= (async () => {
@@ -56,6 +59,7 @@ export function createDatabaseResource(config: Pick<BotRuntimeConfig | WorkerRun
             // Preserve pg's SSL/socket URL options, which ORM URL decomposition does not copy.
             driverOptions: { connectionString: url.href, connectionTimeoutMillis: 5_000 },
             // Driver diagnostics may contain credentials or SQL; startup reports only safe errors.
+            /** Keep raw SQL and connection diagnostics out of runtime logs because they can contain retained content. */
             logger: () => {},
           });
           await orm.connect();
@@ -69,6 +73,7 @@ export function createDatabaseResource(config: Pick<BotRuntimeConfig | WorkerRun
       })();
       return starting;
     },
+    /** Wait for any in-progress startup, then close the pool exactly once. */
     stop() {
       stopped = true;
       ready = false;

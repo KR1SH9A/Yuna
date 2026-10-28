@@ -1,3 +1,4 @@
+/** Bind an immutable ordered Debate transcript and its declared coverage before evaluation. */
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -31,6 +32,7 @@ export class TranscriptSnapshot extends ScopedEntity {
   @Property({ type: Date, columnType: 'timestamptz', nullable: true }) payloadPurgedAt: Date | null = null;
   @Property({ type: 'text', nullable: true }) purgeReason: string | null = null;
 
+  /** Validate and copy immutable identity, source bindings and retention before creating this record. */
   constructor(input: TranscriptSnapshotInput) {
     super(input);
     assertUuid(input.sessionId);
@@ -57,6 +59,7 @@ export class TranscriptSnapshot extends ScopedEntity {
     this.purgeAfter = new Date(input.purgeAfter);
   }
 
+  /** Erase retained content without removing the minimal identities needed for consent or delivery reconciliation. */
   purgePayload(reasonCode: string, at: Date): void {
     assertDate(at, 'at');
     invariant(reasonCode.length > 0 && reasonCode.length <= 128, 'A bounded purge reason is required');

@@ -1,39 +1,9 @@
-/**
- * Planned component: MemoryContracts
- * Kind: Plain boundary contract catalogue
- * Owner: Memory
- * Status: Design scaffold only; not implemented.
- *
- * Responsibility:
- * Describe trusted subject bindings and internal/shared Memory values. External requests and
- * public responses live in dto/memory-consent.dto.ts, dto/inspect-memory.dto.ts and
- * dto/forget-memory.dto.ts; do not duplicate those shapes here. Planned plain boundary types:
- * MemorySubjectScope: authenticated installationId/guildId/user and purpose.
- * FactProposalAcceptance and EmbeddingAcceptance: bound stored result identity, scope,
- * source/content hash and privacy revision.
- * AudienceMemoryQuery and AuthorizedFactView: scoped purpose, destination and minimal permitted
- * fact values.
- * DisclosureBinding: scope/privacy revision plus fact and audience provenance for release/delivery
- * revalidation.
- * DeletionProgress: owner-internal deletion generation and cleanup acknowledgment/status values
- * for lifecycle/recovery coordination; public display is mapped to MemoryDeletionResponseDto.
- *
- * Scope:
- * Staged until personal memory ships.
- *
- * Planned methods:
- * No business methods planned. These are conceptual data shapes, not runtime services,
- * declarations or implementations.
- *
- * Collaborators/Boundaries:
- * Plain internal contracts for scoped retrieval, result acceptance, disclosure and cleanup.
- * Interactive methods consume Administration's transport-neutral TrustedCallerContext separately
- * from their DTO arguments. Memory derives MemorySubjectScope from verified identity and current
- * consent; callers cannot assert another subject's scope. Community receives permitted values
- * and bindings, never private entity references or user-supplied authority.
- *
- * Invariants:
- * A user able to read a private source is not automatically allowed to disclose it to a public
- * destination. Personal facts cannot establish staff authority. Memory consent is distinct from
- * debate consent.
- */
+/** Memory ships as private, explicit user submissions; no inferred facts or public/provider copies cross this boundary. */
+export interface MemoryDisclosureBinding {
+  readonly installationId: string; readonly guildId: string; readonly userId: string;
+  readonly scopeId: string; readonly privacyRevision: number;
+  readonly facts: readonly { readonly factId: string; readonly contentHash: string }[];
+}
+export const memoryPurpose = 'personal_reference';
+export const maximumMemoryFacts = 50;
+export const memoryPageSize = 3;

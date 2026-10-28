@@ -1,4 +1,6 @@
+/** Check role-specific environment validation without reading real credentials or opening connections. */
 import assert from 'node:assert/strict';
+import { loadHealthConfig } from '../../src/platform/config/runtime-config.js';
 import { readFileSync } from 'node:fs';
 import { inspect, parseEnv } from 'node:util';
 import { test } from '@jest/globals';
@@ -19,7 +21,7 @@ const liveWorkerEnvironment: EnvironmentVariables = Object.freeze({
 function forbidReads(env: EnvironmentVariables, names: readonly string[]): EnvironmentVariables {
   const guarded = { ...env };
   for (const name of names) {
-    Object.defineProperty(guarded, name, { get() { throw new Error(`Unexpected configuration read: ${name}`); } });
+    Object.defineProperty(guarded, name, { /** Trap an environment-property read so the test can verify that unused secrets stay unread. */ get() { throw new Error(`Unexpected configuration read: ${name}`); } });
   }
   return Object.freeze(guarded);
 }
@@ -205,10 +207,10 @@ test('loaded snapshots are deeply frozen and independent of later environment ch
   assert.equal(Reflect.set(worker, 'concurrency', 10), false);
   env.DISCORD_BOT_TOKEN = 'replacement-token';
   env.DEEPSEEK_API_KEY = 'replacement-key';
-  assert.deepEqual(bot.discord, { mode: 'live', token: 'original-token', guildId: botEnvironment.DISCORD_GUILD_ID, replyModel: 'fake' });
+  assert.deepEqual(bot.discord, { mode: 'live', token: 'original-token', guildId: botEnvironment.DISCORD_GUILD_ID, replyModel: 'fake', jevModel: 'chosen-decision-model' });
   assert.equal(worker.deepseek.mode, 'live');
   if (worker.deepseek.mode === 'live') assert.equal(worker.deepseek.apiKey, 'fixture-deepseek-key');
-  assert.deepEqual(loadBotConfig(env).discord, { mode: 'live', token: 'replacement-token', guildId: botEnvironment.DISCORD_GUILD_ID, replyModel: 'fake' });
+  assert.deepEqual(loadBotConfig(env).discord, { mode: 'live', token: 'replacement-token', guildId: botEnvironment.DISCORD_GUILD_ID, replyModel: 'fake', jevModel: 'chosen-decision-model' });
   assert.notEqual(loadWorkerConfig(env).deepseek, worker.deepseek);
 });
 
@@ -233,4 +235,13 @@ test('the checked-in environment example parses and loads both roles without int
   const worker = loadWorkerConfig(env);
   assert.deepEqual(worker.deepseek, { mode: 'fake' });
   assert.deepEqual(worker.jev, { mode: 'disabled' });
+});
+
+
+test('health settings read no Discord or provider credential', () => {
+  const env = { BOT_DATABASE_URL: 'postgresql://health@localhost/yuna', DISCORD_GUILD_ID: '123456789012345678',
+    /** Fail if a read-only health probe tries to obtain a Discord token. */
+    get DISCORD_BOT_TOKEN(): string { throw new Error('Forbidden secret access'); } };
+  assert.equal(loadHealthConfig(env).role, 'bot');
+  assert.throws(() => loadHealthConfig({ BOT_DATABASE_URL: env.BOT_DATABASE_URL, DISCORD_GUILD_ID: 'invalid' }));
 });
