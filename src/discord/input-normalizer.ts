@@ -25,6 +25,13 @@ export function hashDiscordContent(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+/** A standalone name calls Yuna without a slash command; quoted/code text and name substrings stay quiet. */
+export function callsYunaByName(content: string): boolean {
+  if (typeof content !== 'string' || content.length > 4000) return false;
+  const spoken = content.replace(/```[\s\S]*?(?:```|$)/g, ' ').replace(/`[^`\n]*`|^\s*>.*$/gm, ' ');
+  return /(?:^|[^\p{L}\p{N}_])yuna(?=$|[^\p{L}\p{N}_])/iu.test(spoken.normalize('NFKC'));
+}
+
 /** Include edits and reply identity so matching normalized text cannot conceal a changed source. */
 export function hashMessageSource(source: Pick<ConversationSourceSnapshot,
   'content' | 'editedTimestamp' | 'reference'>): string {
@@ -123,7 +130,7 @@ export function normalizeConversationMessage(
     }
   } catch { return null; }
   if (source.authorIsBot || source.webhookId || source.system || source.authorId === botUserId) return null;
-  if (!source.directlyMentionsBot && verifiedPreviousReply === undefined) return null;
+  if (!source.directlyMentionsBot && verifiedPreviousReply === undefined && !callsYunaByName(source.content)) return null;
   if (typeof source.content !== 'string' || !Number.isFinite(source.createdTimestamp)
     || !Number.isFinite(new Date(source.createdTimestamp).getTime())
     || (source.editedTimestamp !== null && !Number.isFinite(source.editedTimestamp))) return null;
@@ -158,7 +165,7 @@ export function normalizeAdministrationCommand(source: AdministrationCommandSnap
     if (selected.type === 2 && selected.name === 'knowledge') return normalizeKnowledgeCommand(source);
     if (selected.type === 2 && selected.name === 'memory') return normalizeMemoryCommand(source, selected);
     if (selected.type === 2 && selected.name === 'debate') return normalizeDebateCommand(source, selected);
-    if (selected.type !== 1 || selected.value !== undefined || !['status', 'bootstrap', 'configure', 'remove', 'grant', 'revoke', 'pause', 'resume', 'channel', 'channel-status', 'ban', 'unban', 'kick', 'report', 'action', 'usage', 'limit', 'limit-clear'].includes(selected.name)) return null;
+    if (selected.type !== 1 || selected.value !== undefined || !['status', 'bootstrap', 'setup', 'configure', 'remove', 'grant', 'revoke', 'pause', 'resume', 'channel', 'channel-status', 'ban', 'unban', 'kick', 'report', 'action', 'usage', 'limit', 'limit-clear'].includes(selected.name)) return null;
     const entries = selected.options ?? [];
     if (!Array.isArray(entries) || entries.length > 5) return null;
     const values = new Map<string, { type: number; value?: unknown }>();
@@ -167,7 +174,7 @@ export function normalizeAdministrationCommand(source: AdministrationCommandSnap
       values.set(entry.name, entry);
     }
     const allowedOptions: Readonly<Record<string, readonly string[]>> = {
-      status: [], bootstrap: [], configure: [], remove: ['installation-revision'], grant: ['user', 'capability', 'channel', 'target', 'expires'],
+      status: [], bootstrap: [], setup: [], configure: [], remove: ['installation-revision'], grant: ['user', 'capability', 'channel', 'target', 'expires'],
       revoke: ['grant-id', 'authority-revision', 'row-revision', 'reason'],
       pause: ['safety-revision', 'reason'], resume: ['safety-revision'], channel: ['channel', 'mode', 'row-revision'],
       'channel-status': ['channel'],
@@ -214,7 +221,7 @@ export function normalizeAdministrationCommand(source: AdministrationCommandSnap
         command = { ...identity, command: 'report', arguments: Object.freeze({ channelId, messageId, allegation }) };
         break;
       }
-      case 'status': case 'bootstrap': case 'configure': case 'usage': case 'limit-clear':
+      case 'status': case 'bootstrap': case 'setup': case 'configure': case 'usage': case 'limit-clear':
         command = { ...identity, command: selected.name, arguments: Object.freeze({}) };
         break;
       case 'remove':

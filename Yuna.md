@@ -4,11 +4,11 @@ Updated 29 October 2026. This is the function, data-flow and implementation guid
 
 ## Scope and current state
 
-The selected implementation now includes conversations, approved server knowledge, text moderation, staff ban/unban/kick controls, member quotas and spending preferences, explicit private memory, and consented structured debates. Administration owns authority, configuration, safety and removal. PostgreSQL owns durable claims and accounting; separate bot and worker processes own Discord and provider I/O respectively.
+The selected implementation now includes conversations, approved server knowledge, automatic text moderation with setup-time server guidance import, optional staff ban/unban/kick controls, member quotas and spending preferences, explicit private memory, and consented structured debates. Administration owns authority, configuration, safety and removal. PostgreSQL owns durable claims and accounting; separate bot and worker processes own Discord and provider I/O respectively.
 
 The user authorized completing the remaining implementation, adding missing behavior where existing functions could not provide it, supplying editable defaults, and documenting files and methods. Existing notification and latency changes were preserved. No commit or push is part of this work.
 
-There are 40 entity mappings: 36 enabled and four staged. Nine versioned migrations deploy the enabled schema and restricted worker functions. The personal usage preference table is SQL-owned rather than an ORM entity. Staged mappings are ActionPlan, PlanApproval, CustodianEnrollment and FactEmbedding. Their presence does not enable governance or semantic search.
+There are 40 entity mappings: 36 enabled and four staged. Ten versioned migrations deploy the enabled schema and restricted worker functions. The personal usage preference table is SQL-owned rather than an ORM entity. Staged mappings are ActionPlan, PlanApproval, CustodianEnrollment and FactEmbedding. Their presence does not enable governance or semantic search.
 
 This is ordinary TypeScript composition with MikroORM transactions and PostgreSQL notifications plus fallback scans. It does not require a web server, Redis or a second queue system. One bot owns one configured guild; workers share a bounded concurrency limit across enabled task routes. Provider policy is model-selectable, while the current adapters implement DeepSeek chat and OpenRouter Decisions protocols.
 
@@ -36,7 +36,7 @@ These are review units from the original remaining-work plan, now grouped by del
 | O11a–O11c | One-bot session ownership, bounded process lifecycle, health CLI, supervisor/log templates, actual isolated backup/restore rehearsal and finite fake-provider load exercise. |
 | J1–J3 | Typed Choice/Noul/Score adapter and durable moderation/debate worker routes with owner acceptance. Fake or uncertain output cannot establish misconduct. |
 | M1a–M9 | Original-only intake and reports, immutable policy/evidence, bounded observation, typed rule assessment, findings, warning/ban/unban intents, shared target execution, reconciliation, audit and cleanup. |
-| M10 | Automatic warning/ban execution machinery is implemented and tested. The shipped starter policy warns on supported violations; administrators must explicitly configure any automatic ban mapping. No live ban rule was activated. |
+| M10 | Automatic warning/ban execution is implemented and tested. The starter and `/yuna setup` use built-in LLM/Jev moderation: warnings for supported misconduct and bans for severe harm requiring removal. No per-incident staff decision or handwritten rules is needed. No live deployment was activated by source tests. |
 | K1–K2 | Authorized knowledge approval/replacement/retirement, visibility-aware lexical retrieval and invalidation through provider disclosure and sending. |
 | N1–N4 | Explicit private memory consent, member-submitted facts, inspection/search, withdrawal/forget/expiry and removal. No silent chat extraction, public injection or embeddings. |
 | D1–D3 | Exact-scope participant consent, explicit submissions, frozen transcript/rubric, typed Jev evaluation, deterministic totals, optional paired scoring, publication and cleanup. |
@@ -70,11 +70,15 @@ Contract references: [Discord member removal](https://docs.discord.com/developer
 
 ## Default policy and member controls
 
-[config/yuna.example.json](config/yuna.example.json) provides four text rules covering harassment, threats, privacy violations and scams, with quotation/reporting/educational/fictional-context exclusions. Established violations map to a warning; suspicion maps to no action. Original body and established author are required. Model uncertainty, low confidence, missing evidence and unsupported attribution cannot become punishment.
+[config/yuna.example.json](config/yuna.example.json) selects `moderation.mode: autonomous`. [createAutonomousModerationPolicy](src/platform/config/autonomous-moderation.ts) expands it into `community_conduct` (warning) and `severe_harm` (ban), with quotation/reporting/educational/fictional-context exclusions. Bans additionally require Jev's `banNecessary` support and violation confidence/probability of at least 0.98. These gates do not establish real-world model accuracy. Original body and established author are required; model uncertainty, missing evidence and unsupported attribution cannot become punishment. Automatic bans delete no message history.
+
+`/yuna setup` verifies and enrolls the current owner, then [prepareServerConfiguration](apps/bot/moderation-setup.handlers.ts) selects the preset and calls [DiscordStateReader.readServerRules](src/discord/state-reader.ts) outside the configuration transaction. Discovery reads the designated rules channel and clearly named rules/guidelines text channels, retaining topics and current owner/administrator/Manage Guild messages. It is bounded to five channels, the latest 100 messages each, eight complete sources and 8 KiB. Links, embeds, attachments and older history are not imported. Coverage is explicit; an unavailable snapshot cannot replace the active configuration.
+
+[ServerRulesSnapshot](src/platform/config/server-rules.ts) binds each source's guild, channel, message/author when applicable, complete text and SHA-256 hash. ConfigurationService reauthorizes and publishes an immutable policy containing that snapshot. ModerationPolicy supplies it to Jev as separate quoted guidance alongside original evidence and its channel ID. Guidance supplements the built-in criteria; it cannot override exclusions or evidence requirements, order sanctions or target named accounts. `/yuna configure` refreshes it, and `/yuna status` reports mode, source count and coverage. Guidance persists across restarts and with immutable policy history after removal (`moderation_policy_guidance_retained`).
 
 The starter allows 1,000 server provider attempts and ten member-requested attempts per UTC day. [config/yuna.budgeted.example.json](config/yuna.budgeted.example.json) adds USD 5.00 per server and USD 0.50 per member. Prices are deliberately empty: monetary caps block calls until an operator supplies verified, versioned prices and sufficient conservative token bounds. These are editable sample limits, not model-price claims or guarantees about an external provider's bill.
 
-`env:REPLY_MODEL` and `env:JEV_MODEL` are the only environment selectors accepted inside policy files. They resolve to explicit model IDs without reading arbitrary environment secrets. A policy file is bounded, validated and frozen; `/yuna configure` authorizes its persisted revision. Optional features cannot be approved when their composition dependency is absent. Unconfigured installations retain the compatibility baseline: Community only, twenty guild attempts, no automatic moderation or currency budget.
+`env:REPLY_MODEL` and `env:JEV_MODEL` are the only environment selectors accepted inside policy files. They resolve to explicit model IDs without reading arbitrary environment secrets. A policy file is bounded, validated and frozen; `/yuna configure` authorizes its persisted revision. Optional features cannot be approved when their composition dependency is absent. Unconfigured installations retain the compatibility baseline: Community only, twenty guild attempts, no automatic moderation or currency budget. Without a file, `/yuna setup` and `/yuna configure` enable automatic moderation while preserving the other default settings; both model selectors are required.
 
 Members can inspect `/yuna usage`, lower their allowance with `/yuna limit`, and return to server defaults with `/yuna limit-clear`. Personal preferences never raise server limits. Conversation requests and Debate initiation count against the authenticated requester's allowance; automatic moderation counts against the guild allowance. Paired scoring creates two provider attempts. Settings persist across an installation generation change until explicitly cleared or removed. A currency mismatch is reported and blocks claims; an old cap is never relabeled as a different currency.
 
@@ -85,7 +89,8 @@ Every claim reserves before provider dispatch under shared guild/day locks. Atte
 ### Conversation and approved knowledge
 
 ```text
-Human mention/reply → transport-normalized identity and source
+Human name call, mention or reply → transport-normalized identity and source
+ → bounded same-channel history + current/public channel names
  → installation/safety/channel gate → durable intake and request
  → approved visible knowledge + bounded input → community.generate
  → restricted claim → input release → provider-start gate → DeepSeek
@@ -93,7 +98,13 @@ Human mention/reply → transport-normalized identity and source
  → fresh source/permissions → one Discord send → known/unknown outcome
 ```
 
-Only approved content visible in the source channel enters a prompt. Source text, previous reply and knowledge share the 6,000-character input bound. Exact entry IDs, revisions, hashes, audience and expiry are rechecked at worker release/start, result acceptance and dispatch. Edits/deletions cancel current-source work without regenerating or recalling an already sent reply. Retrieval is lexical, bounded and deterministic; it does not promise semantic matching.
+`callsYunaByName` accepts a standalone, case-insensitive “Yuna” without a slash command or Discord ping. Names inside code blocks, inline code and quoted lines do not activate her. Explicit mentions and verified same-channel replies still work; other messages remain quiet. Bot, webhook and system messages cannot trigger replies.
+
+`DiscordStateReader.readConversationContext` supplies the actual server/current channel names, at most 24 public channel names visible to everyone and Yuna, and up to eight complete recent messages from the same channel. One REST page reads at most 20 messages before the caller's message, restricted to the preceding 15 minutes. The requester and bot need View Channel and Read Message History; missing access or unavailable history does not invent context. Threads keep their own audience. The directory can be partial; private channel names are not exported into other channels. This context is read only when called and is not a permanent chat archive or personal memory.
+
+Source text, previous reply, serialized chat context and approved knowledge share the 6,000-character input bound. `IntakeService.bindChatContext` records exact hashes in a separate current-context namespace, never the original moderation-evidence namespace. Edit/delete tombstones beat late reads; existing pending uses are canceled. Migration 010 adds an independent worker check at claim, disclosure and provider start. `validateContextBindings` checks the same sources again at acceptance and dispatch. Channel/role changes and Gateway gaps fence old snapshots. Context payloads follow ordinary conversation retention/removal; they are quoted data and cannot authorize sanctions, permission changes or administration. Already disclosed or sent content cannot be recalled.
+
+Only approved, visible knowledge entries supplement the chat context. Their exact IDs, revisions, hashes, audience and expiry remain checked at worker release/start, result acceptance and dispatch. Retrieval is lexical, bounded and deterministic; it does not promise semantic matching.
 
 ### Moderation
 
@@ -101,7 +112,7 @@ Only approved content visible in the source channel enters a prompt. Source text
 Authentic MESSAGE_CREATE → canonical case and retained original evidence
  → moderation.observe → exact supported original quotes
  → one moderation.assess per enabled rule → bound findings
- → strongest explicitly configured operation → durable action intent
+ → strongest supported policy operation → durable action intent
  → target execution gate + current authority/native facts
  → warning/ban/unban transport → observed outcome/reconciliation
 ```
@@ -188,7 +199,7 @@ Health reports current installation/safety/availability and the live ownership l
 
 ## Verification and remaining acceptance
 
-On 29 October 2026, `npm run test:all` passed all 63 suites and 605 tests after completing the scaffold audit and integration changes. `npm test` separately passed 390 tests in 41 suites. The TypeScript build, `npm run check:docs` and `git diff --check` also passed. This includes real isolated PostgreSQL governance, kick and artifact integration tests alongside the existing feature suites. Run `npm run test:coverage` when a fresh coverage report is needed; no new coverage percentage is claimed for this change. PostgreSQL integration tests must run serially and need local server binaries and permission to create and clean up temporary shared memory. The test helper uses isolated disposable databases; it does not migrate the user's running database.
+On 29 October 2026, `npm run test:all` passed all 65 suites and 631 tests after adding name calls, channel names and bounded recent chat context alongside automatic moderation setup and server guidance import. The TypeScript build, `npm run check:docs` and `git diff --check` also passed. Coverage includes real isolated PostgreSQL upgrades from versions 1–9, persisted context disclosure, edit/delete cancellation before claim/disclosure/start/send, independent worker rejection of stale context, policy persistence and automatic warning/ban execution. External responses are controlled fixtures; no live Discord deployment or real-model judgment quality is established by these tests. Run `npm run test:coverage` when a fresh coverage report is needed; no new coverage percentage is claimed for this change. PostgreSQL integration tests must run serially and need local server binaries and permission to create and clean up temporary shared memory. The test helper uses isolated disposable databases; it does not migrate the user's running database.
 
 The suite covers exact role grants and nine-step upgrades, real-lock concurrency, rollback, source/policy/safety invalidation, unknown effects/costs, consent/withdrawal/deletion, quotas and currency changes, subprocess lifecycle, private transport attachments, and dependency boundaries. The operations suite performs a real isolated dump/restore and a bounded thirty-input fake load with twenty admitted tasks, four worker lanes and twenty unique replies. Those finite measurements do not establish production capacity.
 

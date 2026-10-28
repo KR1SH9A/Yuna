@@ -6,6 +6,9 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import { temporaryPostgres } from '../helpers/temporary-postgres.js';
 import { prepareDatabase } from '../../src/platform/db/migrations/migrate.js';
 import { entityOrmConfig } from '../../src/platform/db/mikro-orm.config.js';
+import { createAutonomousModerationPolicy } from '../../src/platform/config/autonomous-moderation.js';
+import { ModerationService } from '../../src/contexts/moderation/moderation.service.js';
+import { ModerationPolicyRevision } from '../../src/contexts/moderation/entities/moderation-policy-revision.entity.js';
 import { defaultYunaPolicy } from '../../src/platform/config/policy-config.js';
 import { AuthorityService } from '../../src/contexts/administration/authority.service.js';
 import { ConfigurationService } from '../../src/contexts/administration/configuration.service.js';
@@ -262,4 +265,37 @@ test('audit expiry deletes bounded pages and removal explicitly retains records 
     assert.equal(result.disposition, 'retained'); assert.equal(result.reasonCode, 'audit_retention_until_expiry');
   });
   assert.equal(await bot.em.fork().count(AuditEntry, { ...f.scope, operation: 'test.expired_audit' }), 0);
+});
+
+
+test('automatic setup persists imported guidance, survives restart comparison and rejects cross-guild guidance', async () => {
+  const f = await scenario();
+  const moderation = new ModerationService(bot, f.scope, f.lifecycle, new IntakeService());
+  const configuration = new ConfigurationService(bot, f.authority, f.model, {
+    updateChannelSettings: (em, input, at) => f.conversation.updateChannelSettings(em, input, at),
+    readOperationalStatus: em => f.conversation.readOperationalStatus(em),
+    invalidatePending: (em, reason, at) => f.conversation.invalidatePending(em, reason, at),
+    publishModerationPolicy: (em, caller, config, at) => moderation.publishPolicy(em, caller, config, at),
+  });
+  const content = 'Use the recruitment channel for team advertisements.';
+  const base = { ...structuredClone(defaultYunaPolicy), moderation: { enabled: true,
+    policy: createAutonomousModerationPolicy(f.model, 'assessment-model') } };
+  const config = structuredClone(base);
+  config.moderation.policy.evaluationConfiguration.serverRules = { schemaVersion: 1, guildId: f.scope.guildId,
+    observedAt: new Date().toISOString(), coverage: 'complete', sources: [{ kind: 'message', channelId: '970000000000000001',
+      messageId: '970000000000000003', authorId: ownerId, content, contentHash: createHash('sha256').update(content).digest('hex') }] };
+  await configuration.applyConfiguration(f.caller(), config, 0);
+  assert.equal(await configuration.isConfigurationCurrent(f.scope, base), true);
+  assert.equal(await configuration.isConfigurationCurrent(f.scope, { ...base, usage: { ...base.usage, dailyAttemptLimit: 999 } }), false);
+  const status = await configuration.status(f.caller());
+  assert.deepEqual(status.moderation, { mode: 'autonomous', serverRuleSources: 1, rulesCoverage: 'complete' });
+  const published = await bot.em.fork().findOneOrFail(ModerationPolicyRevision, f.scope);
+  assert.equal(published.evaluationConfiguration.serverRules?.sources[0]?.content, content);
+  const wrong = structuredClone(config); wrong.moderation.policy.evaluationConfiguration.serverRules!.guildId = '999';
+  await assert.rejects(configuration.applyConfiguration(f.caller(), wrong, 1), /another guild/);
+  const disposition = await bot.em.fork().transactional(async em => {
+    await f.lifecycle.lockPrivacy(em, f.scope);
+    return moderation.cleanupForRemoval(em, new Date());
+  });
+  assert.equal(disposition.reasonCode, 'moderation_policy_guidance_retained');
 });

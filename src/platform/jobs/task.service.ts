@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { LockMode } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import { prepareReplyGenerationInput, type ReplyGenerationInput } from '../../ai/contracts/generation.contracts.js';
-import { assertDiscordId, invariant } from '../db/entity-values.js';
+import { assertDiscordId, invariant, type JsonObject } from '../db/entity-values.js';
 import { AiTask } from './entities/ai-task.entity.js';
 import { PreparedInput } from './entities/prepared-input.entity.js';
 import { OutboxEntry } from './entities/outbox-entry.entity.js';
@@ -45,6 +45,7 @@ export class TaskService {
     const payload = {
       text: prepared.text,
       ...(prepared.previousReply === undefined ? {} : { previousReply: prepared.previousReply }),
+      ...(prepared.chatContext ? { chatContext: prepared.chatContext as unknown as JsonObject } : {}),
       ...(prepared.approvedKnowledge?.length ? { approvedKnowledge: prepared.approvedKnowledge.map(entry => ({ ...entry })) } : {}),
       maxOutputTokens: prepared.maxOutputTokens,
     };

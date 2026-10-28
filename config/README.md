@@ -1,13 +1,13 @@
 # Configure Yuna
 
-This folder contains starter policies, not credentials. Copy a template to `config/yuna.json`, set `YUNA_CONFIG_FILE=config/yuna.json` in `.env.bot`, then apply it with `/yuna configure` after `/yuna bootstrap`. Configuration changes are authorized, validated and saved as revisions. Editing a file alone does not silently change the running server policy.
+This folder contains starter policies, not credentials. Copy a template to `config/yuna.json`, set `YUNA_CONFIG_FILE=config/yuna.json` in `.env.bot`, then run `/yuna setup` as the current server owner. Setup enrolls the owner, enables automatic moderation and imports available server guidance. No handwritten moderation rules are required. Configuration changes are authorized, validated and saved as revisions; editing a file alone does not change the running server policy.
 
 | Template | Initial behavior |
 | --- | --- |
-| `yuna.example.json` | Four text moderation rules, warnings for established violations, ten daily member-requested provider attempts per member and 1,000 total provider attempts per server. No monetary cap is promised. |
-| `yuna.budgeted.example.json` | The same rules, plus a $5.00 server budget and $0.50 member budget per UTC day. Add verified prices before live calls can run. |
+| `yuna.example.json` | Automatic warnings and bans based on LLM observations and Jev assessments; ten daily member-requested provider attempts per member and 1,000 total provider attempts per server. No monetary cap is promised. |
+| `yuna.budgeted.example.json` | The same moderation preset, plus a $5.00 server budget and $0.50 member budget per UTC day. Add verified prices before live calls can run. |
 
-The starter enables Memory and Debates as available commands. Each member still has to consent. Moderation evaluates original text for harassment, threats, privacy violations and scams. Quotation/reporting/educational context is excluded when the conduct is not endorsed. Unclear evidence produces uncertainty. The starter never bans or deletes message history; owners can explicitly change the action mappings later.
+The starter enables Memory and Debates as available commands. Each member still has to consent. Automatic moderation warns for supported misconduct and bans only for clearly established severe harm when Jev also finds removal necessary and proportionate. It never deletes message history. Quotation, reporting and educational context are excluded when the conduct is not endorsed; uncertainty produces no sanction. Staff need not approve individual actions, but retain pause and correction controls.
 
 JSON does not support comments. This guide explains each section, and the TypeScript configuration contract documents its constraints.
 
@@ -55,6 +55,16 @@ Members can use `/yuna usage` to inspect their own quota and accounting, `/yuna 
 
 ## Moderation policy
 
+The starter's complete moderation setting is `"moderation": { "enabled": true, "mode": "autonomous" }`. Yuna expands this into two built-in criteria, `community_conduct` and `severe_harm`. Each admitted case uses one LLM observation and two Jev assessments, subject to existing usage limits. Automatic bans additionally require at least 0.98 violation confidence, violation probability and ban-necessity support; these model scores are acceptance gates, not measured accuracy guarantees. The route evaluates original message evidence, not a member's historical behavior or coordinated raids.
+
+`/yuna setup` explicitly selects this preset, preserving the file's budgets, retention and optional features. `/yuna configure` applies the file's selected policy and refreshes imported guidance; without a file, both commands use automatic moderation with the default 20 server attempts/day and other default settings. Both model selectors must be configured. To disable moderation, apply a file with `"moderation": { "enabled": false, "policy": null }` using `/yuna configure`.
+
+Discovery reads Discord's designated rules channel and text/announcement channels named rules, guidelines or code-of-conduct. It checks up to five channels and their latest 100 messages, prioritizing pins within that page. It retains channel topics and messages by the current owner or members with Administrator/Manage Guild, including bots with those permissions. Webhooks and ordinary member discussion are excluded. The snapshot holds at most eight complete sources and 8 KiB of text; embeds, attachments, links and older history are not imported. Yuna needs Message Content intent plus View Channel and Read Message History. [Discord guild channels](https://docs.discord.com/developers/resources/guild#get-guild-channels).
+
+`/yuna status` reports moderation mode, saved source count and coverage. Partial reads are labeled; an unavailable read or a partial read with no sources leaves the existing configuration intact. When no rules channel exists, the built-in criteria still work. Refresh with `/yuna configure` after editing server rules; discovery does not watch edits automatically. Saved guidance is additional context for Jev and cannot override evidence gates, exclusions or ban requirements, or instruct Yuna to target a named account. Each case binds an immutable policy revision, so future refreshes cannot rewrite earlier decisions.
+
+Advanced custom policies remain available through `moderation.policy` instead of `moderation.mode`:
+
 `rules` gives each rule a stable ID, version, description and enabled flag. `requiredEvidence` declares whether the original body, media and author must be established. The shipped route inspects text; requiring media makes that case incomplete until a media-inspection capability exists.
 
 `exclusions` describes allowed contexts. `evaluationConfiguration` selects the model bindings, prompt version and explicit confidence/decision thresholds. Model answers are inputs to a deterministic policy; they do not grant permissions or choose Discord operations.
@@ -66,3 +76,5 @@ Members can use `/yuna usage` to inspect their own quota and accounting, `/yuna 
 `payloadDays` controls ordinary conversation payloads, `metadataDays` controls eligible terminal conversation metadata, `evidenceDays` controls moderation evidence, and `accountingDays` controls eligible resolved accounting. Metadata retention must be at least payload retention. Values are whole days from 1 to 3,650.
 
 Payload erasure and financial/effect resolution are separate. An unresolved provider charge or Discord action may retain minimal references after content is erased. Removal runs each owner's cleanup and records any explicit unresolved retention disposition.
+
+Imported server guidance is policy configuration. Its text and source references persist with immutable moderation policy history, including after installation removal; removal reports `moderation_policy_guidance_retained`. It does not expire with transient message evidence.

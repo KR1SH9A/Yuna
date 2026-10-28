@@ -86,10 +86,11 @@ export class ReplyDeliveryService {
         const resultCurrent = admission && await this.tasks.isResultCurrent(em, this.scope, row.acceptedResultReference, admission.safetyRevision);
         const knowledgeCurrent = !request?.contextBindings?.some(binding => binding.owner === 'knowledge')
           || Boolean(this.knowledge && await this.knowledge.validateBindings(em, request.contextBindings, request.audienceBinding, now));
+        const contextCurrent = request && await this.intake.validateContextBindings(em, this.scope, request.contextBindings);
         if (!admission || !resultCurrent || !request || request.acceptedResultReference !== row.acceptedResultReference
           || !ReplyPolicy.validateAudience(row.audienceBinding, row.channelId!, request.audienceBinding)
           || row.channelId !== request.sourceChannelId || row.replyMessageId !== request.sourceMessageId
-          || !knowledgeCurrent || request.canceledAt || request.stage !== 'accepted' || !source || !remote.exists || !remote.canSend || source.hash !== remote.sourceHash || !ReplyPolicy.validateReply(row.acceptedContent, row.allowedMentions) || settings?.mode !== 'direct' || settings.rowRevision !== request.settingsRevision) {
+          || !contextCurrent || !knowledgeCurrent || request.canceledAt || request.stage !== 'accepted' || !source || !remote.exists || !remote.canSend || source.hash !== remote.sourceHash || !ReplyPolicy.validateReply(row.acceptedContent, row.allowedMentions) || settings?.mode !== 'direct' || settings.rowRevision !== request.settingsRevision) {
           row.cancelBeforeDispatch('source_or_permission_changed', row.rowRevision, now);
           return null;
         }

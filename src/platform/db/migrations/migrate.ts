@@ -113,6 +113,7 @@ async function verifyRuntimePrivileges(em: EntityManager, administrator: string,
     ['public.yuna_debate_finish(uuid,uuid,integer,text,jsonb)', false, true],
     ['public.yuna_debate_recover(integer)', true, false],
     ['public.yuna_knowledge_context_current(uuid)', false, false],
+    ['public.yuna_chat_context_current(uuid)', false, false],
     ['public.yuna_usage_task_user(uuid)', false, false],
     ['public.yuna_usage_user_gate(uuid,numeric,text,boolean)', false, false],
     ['public.yuna_moderation_gate(uuid)', false, false],
@@ -141,7 +142,7 @@ export async function prepareDatabase(config: DatabasePreparationConfig): Promis
   const url = validateConfiguration(config);
   let orm: MikroORM | undefined;
   try {
-    const names = ['001-core.sql', 'conversation-worker.sql', '003-conversation-notifications.sql', '004-operating-controls.sql', '005-moderation-worker.sql', '006-user-quotas.sql', '007-knowledge-context.sql', '008-memory.sql', '009-debates.sql'];
+    const names = ['001-core.sql', 'conversation-worker.sql', '003-conversation-notifications.sql', '004-operating-controls.sql', '005-moderation-worker.sql', '006-user-quotas.sql', '007-knowledge-context.sql', '008-memory.sql', '009-debates.sql', '010-chat-context.sql'];
     const migrations = await Promise.all(names.map(async (name, index) => {
       const sql = await readMigration(name);
       return { version: index + 1, name, sql, checksum: createHash('sha256').update(sql).digest('hex') };

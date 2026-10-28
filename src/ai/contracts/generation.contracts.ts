@@ -1,9 +1,10 @@
 /**
- * Conversation generation v1. The feature owner selects the text and optional previous Yuna
- * reply and approved visible knowledge before inference. Personal memory remains a separate capability.
+ * Conversation generation v1. The feature owner selects the text, recent same-channel context,
+ * optional previous Yuna reply and approved visible knowledge. Personal memory remains separate.
  * These values contain no destination authority; generated text cannot redirect delivery.
  */
 import { createHash } from 'node:crypto';
+import { prepareChatContext, type ChatContext } from './chat-context.js';
 import { assertNonNegativeInteger, assertUuid, invariant } from '../../platform/db/entity-values.js';
 
 /** Approved values are contextual data; these references cannot authorize actions or redirect a reply. */
@@ -12,6 +13,7 @@ export interface ApprovedKnowledgeContext { readonly entryId: string; readonly c
 export interface ReplyGenerationInput {
   readonly text: string;
   readonly previousReply?: string;
+  readonly chatContext?: ChatContext;
   readonly approvedKnowledge?: readonly ApprovedKnowledgeContext[];
   readonly maxOutputTokens: number;
 }
@@ -34,9 +36,12 @@ export function prepareReplyGenerationInput(input: ReplyGenerationInput): ReplyG
       return Object.freeze({ entryId: entry.entryId, content: entry.content, contentHash: entry.contentHash, revision: entry.revision });
     }));
   }
-  invariant(input.text.length + (input.previousReply?.length ?? 0) + (approvedKnowledge?.reduce((sum, entry) => sum + entry.content.length, 0) ?? 0) <= 6_000,
+  const chatContext = input.chatContext === undefined ? undefined : prepareChatContext(input.chatContext);
+  invariant(input.text.length + (input.previousReply?.length ?? 0) + (chatContext ? JSON.stringify(chatContext).length : 0)
+    + (approvedKnowledge?.reduce((sum, entry) => sum + entry.content.length, 0) ?? 0) <= 6_000,
     'Combined reply context exceeds 6000 characters');
   const result = Object.freeze({ text: input.text, ...(input.previousReply === undefined ? {} : { previousReply: input.previousReply }),
+    ...(chatContext ? { chatContext } : {}),
     ...(approvedKnowledge?.length ? { approvedKnowledge } : {}), maxOutputTokens: input.maxOutputTokens });
   invariant(Buffer.byteLength(JSON.stringify(result), 'utf8') <= 28 * 1024, 'Reply input exceeds byte bound');
   return result;

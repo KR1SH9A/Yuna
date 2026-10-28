@@ -10,7 +10,7 @@ export const discordGrantCapabilities = [
 /** Sanitized, immutable command data. Tokens, SDK objects, roles and asserted authority never cross ingress. */
 export type NormalizedAdministrationCommand = import('../knowledge-commands.js').NormalizedKnowledgeCommand
   | import('../memory-commands.js').NormalizedMemoryCommand | import('../debate-commands.js').NormalizedDebateCommand | DiscordCommandIdentity & (
-  | { readonly command: 'status' | 'bootstrap' | 'configure' | 'usage' | 'limit-clear'; readonly arguments: Readonly<Record<string, never>> }
+  | { readonly command: 'status' | 'bootstrap' | 'setup' | 'configure' | 'usage' | 'limit-clear'; readonly arguments: Readonly<Record<string, never>> }
   | { readonly command: 'action'; readonly arguments: { readonly actionId: string } }
   | { readonly command: 'limit'; readonly arguments: { readonly dailyAttemptLimit?: number; readonly dailyBudget?: { readonly amount: string; readonly currency: string } } }
   | { readonly command: 'remove'; readonly arguments: { readonly expectedInstallationRevision: number } }

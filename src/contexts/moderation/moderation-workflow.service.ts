@@ -228,7 +228,7 @@ export class ModerationWorkflowService {
   /** Expose plain retained evidence facts to pure policy; later edits/current-source markers play no role. */
   private evidence(row: EvidenceRevision, now: Date): ModerationEvidence {
     return { ...this.scope, caseId: row.caseId, evidenceRevisionId: row.id, originalEventId: row.originalEventId, contentHash: row.originalContentHash,
-      sourceUse: 'original_evidence', originalContent: row.originalContent, authorKind: row.authorKind, originalAuthorUserId: row.originalAuthorUserId,
+      sourceUse: 'original_evidence', sourceChannelId: row.sourceChannelId, originalContent: row.originalContent, authorKind: row.authorKind, originalAuthorUserId: row.originalAuthorUserId,
       attachments: row.originalAttachmentDescriptors ?? [], captureCoverage: row.captureCoverage, missingReasons: row.missingReasons,
       available: row.payloadPurgedAt === null && row.purgeAfter > now };
   }

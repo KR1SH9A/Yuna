@@ -77,6 +77,7 @@ export const administrationCommandDefinition: Omit<RESTPostAPIChatInputApplicati
         { name: 'allegation', description: 'Your report; this does not establish a violation', type: ApplicationCommandOptionType.String, required: true, max_length: 1000 },
       ] },
     { name: 'status', description: 'Inspect Yuna status and current revisions', type: ApplicationCommandOptionType.Subcommand },
+    { name: 'setup', description: 'Set up automatic AI moderation and remember server rules', type: ApplicationCommandOptionType.Subcommand },
     { name: 'bootstrap', description: 'Enroll the current server owner', type: ApplicationCommandOptionType.Subcommand },
     { name: 'configure', description: 'Apply the operator’s local configuration file', type: ApplicationCommandOptionType.Subcommand },
     { name: 'remove', description: 'Begin removing this Yuna installation and its retained data', type: ApplicationCommandOptionType.Subcommand,
@@ -109,7 +110,7 @@ export const administrationCommandDefinition: Omit<RESTPostAPIChatInputApplicati
     { name: 'channel', description: 'Choose direct replies or silence in a channel', type: ApplicationCommandOptionType.Subcommand,
       options: [
         { name: 'channel', description: 'Channel to configure', type: ApplicationCommandOptionType.Channel, required: true },
-        { name: 'mode', description: 'Whether explicit mentions and replies receive answers', type: ApplicationCommandOptionType.String, required: true,
+        { name: 'mode', description: 'Whether name calls, mentions and replies receive answers', type: ApplicationCommandOptionType.String, required: true,
           choices: [{ name: 'direct', value: 'direct' }, { name: 'silent', value: 'silent' }] },
         { name: 'row-revision', description: 'Current settings revision, or zero to create settings', type: ApplicationCommandOptionType.Integer, required: true, min_value: 0, max_value: 2_147_483_647 },
       ] },
@@ -148,7 +149,7 @@ export class DiscordGateway implements RuntimeResource {
   readonly #createClient: () => Client;
   readonly #abort = new AbortController();
   readonly #callbacks = new Set<Promise<void>>();
-  readonly #normalizing = new Map<string, Set<{ invalidated: boolean }>>();
+  readonly #normalizing = new Map<string, Set<{ invalidated: boolean; channelId: string }>>();
   #client?: Client;
   #botUserId?: string;
   #available = false;
@@ -225,6 +226,12 @@ export class DiscordGateway implements RuntimeResource {
     client.on(Events.MessageUpdate, (_old, message) => this.#invalidate(message));
     client.on(Events.MessageDelete, message => this.#invalidate(message));
     client.on(Events.MessageBulkDelete, messages => { for (const message of messages.values()) this.#invalidate(message); });
+    // Directory/permission changes fence pending snapshots before the owner reopens admission.
+    client.on(Events.ChannelUpdate, (_old, channel) => { if ('guildId' in channel && channel.guildId === this.#options.guildId) this.#unavailable(false); });
+    client.on(Events.ChannelDelete, channel => { if ('guildId' in channel && channel.guildId === this.#options.guildId) this.#unavailable(false); });
+    client.on(Events.GuildRoleUpdate, (_old, role) => { if (role.guild.id === this.#options.guildId) this.#unavailable(false); });
+    client.on(Events.GuildRoleDelete, role => { if (role.guild.id === this.#options.guildId) this.#unavailable(false); });
+    client.on(Events.GuildUpdate, (_old, guild) => { if (guild.id === this.#options.guildId) this.#unavailable(false); });
     client.on(Events.ShardDisconnect, () => this.#unavailable());
     client.on(Events.ShardReconnecting, () => this.#unavailable());
     client.on(Events.Invalidated, () => this.#unavailable());
@@ -467,7 +474,9 @@ export class DiscordGateway implements RuntimeResource {
     if (this.#stopping || message.guildId !== this.#options.guildId) return;
     try { for (const id of [message.guildId, message.channelId, message.id]) assertDiscordId(id); }
     catch { return; }
-    for (const token of this.#normalizing.get(message.id) ?? []) token.invalidated = true;
+    for (const tokens of this.#normalizing.values()) for (const token of tokens) {
+      if (token.channelId === message.channelId) token.invalidated = true;
+    }
     const reference = { guildId: message.guildId, channelId: message.channelId, messageId: message.id };
     this.#track(Promise.resolve().then(() => this.#options.onInvalidation(reference)));
   }
@@ -491,8 +500,8 @@ export class DiscordGateway implements RuntimeResource {
       || message.author.bot || message.webhookId || message.system) return;
     const reference = { guildId: message.guildId, channelId: message.channelId, messageId: message.id };
     if (!this.#allowed(reference)) return;
-    const token = { invalidated: false };
-    const tokens = this.#normalizing.get(message.id) ?? new Set<{ invalidated: boolean }>();
+    const token = { invalidated: false, channelId: message.channelId };
+    const tokens = this.#normalizing.get(message.id) ?? new Set<{ invalidated: boolean; channelId: string }>();
     tokens.add(token);
     this.#normalizing.set(message.id, tokens);
     this.#track((async () => {
@@ -521,7 +530,11 @@ export class DiscordGateway implements RuntimeResource {
         }
         if (token.invalidated || !this.#allowed(reference)) return;
         const normalized = normalizeConversationMessage(snapshot, this.botUserId, previousReply);
-        if (normalized) await this.#options.onMessage(normalized);
+        if (normalized) {
+          const chatContext = await this.stateReader.readConversationContext(normalized,
+            6000 - normalized.text.length - (normalized.previousReply?.length ?? 0), this.#abort.signal);
+          if (!token.invalidated && this.#allowed(reference)) await this.#options.onMessage(Object.freeze({ ...normalized, ...(chatContext ? { chatContext } : {}) }));
+        }
       } finally {
         tokens.delete(token);
         if (!tokens.size) this.#normalizing.delete(message.id);

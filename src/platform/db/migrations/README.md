@@ -21,5 +21,6 @@ Use `npm run schema:sql` for model/schema review; it includes the additional con
 7. `007-knowledge-context.sql` checks approved knowledge revision, hash, visibility and expiry at provider disclosure/start, in addition to the owner acceptance/delivery checks.
 8. `008-memory.sql` activates explicit private Memory consent/facts/deletion receipts. It does not enable inferred memories, embeddings or public context copies.
 9. `009-debates.sql` activates consented Debate storage and restricted assessment routes, frozen transcript/rubric bindings, exact accounting and revocation-aware recovery.
+10. `010-chat-context.sql` checks every selected current chat message at conversation claim/disclosure/start and keeps same-channel scope distinct from original moderation evidence. It upgrades only the old default context-message limit from one to eight, advancing the channel revision; custom limits remain intact.
 
 The new migrations in this change set have not been deployed by this task. The previously present migrations 1–3 retain their original contents. The schema printer remains an entity review tool; the deployment runner also owns platform-only tables such as personal usage preferences.

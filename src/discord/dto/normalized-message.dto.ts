@@ -1,4 +1,5 @@
 /** Plain message identities, current conversation input and original-event provenance across Discord ingress. */
+import type { ChatContext } from '../../ai/contracts/chat-context.js';
 export interface MessageReference {
   readonly guildId: string;
   readonly channelId: string;
@@ -9,6 +10,7 @@ export interface NormalizedConversationMessage extends MessageReference {
   readonly authorId: string;
   readonly text: string;
   readonly previousReply?: string;
+  readonly chatContext?: ChatContext;
   readonly createdAt: Date;
   /** Hash of the full observed source, before removing mentions or trimming input. */
   readonly sourceHash: string;

@@ -116,3 +116,22 @@ test('personal quota commands derive the current actor and disclose only bounded
   }
   expect(calls[0]).toEqual({ ...services.scope, actorId: identity.actorId, sourceRequestId: identity.sourceRequestId });
 });
+
+test('setup authorizes the current owner, prepares automatic moderation and commits before reporting readiness', async () => {
+  const { services, calls } = fixture();
+  const order: string[] = [];
+  services.prepareConfiguration = async (settings, autonomous) => { order.push('prepare'); expect(autonomous).toBe(true); return { config: settings, rules: { count: 2, coverage: 'complete' } }; };
+  services.onConfigurationApplied = () => { order.push('ready'); };
+  const response = await handleAdministrationCommand({ ...identity, command: 'setup', arguments: {} }, services);
+  expect(response).toContain('Remembered 2'); expect(order).toEqual(['prepare', 'ready']);
+  expect(calls).toHaveLength(3); // Bootstrap, authorized status and final revision-bound application.
+  services.prepareConfiguration = async () => { throw new Error('secret-source'); };
+  order.length = 0;
+  const failed = await handleAdministrationCommand({ ...identity, command: 'setup', arguments: {} }, services);
+  expect(failed).toContain('Owner enrollment is ready'); expect(failed).toContain('could not be confirmed');
+  expect(failed).not.toContain('secret-source'); expect(order).toEqual([]);
+  services.authority.bootstrapOwner = async () => { throw new Error('not owner'); };
+  order.length = 0;
+  expect(await handleAdministrationCommand({ ...identity, command: 'setup', arguments: {} }, services)).toContain('not applied');
+  expect(order).toEqual([]);
+});

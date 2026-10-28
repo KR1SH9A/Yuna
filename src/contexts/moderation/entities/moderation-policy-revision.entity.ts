@@ -1,4 +1,5 @@
 /** Immutable, versioned moderation criteria; decision thresholds are explicit operator policy. */
+import { validateServerRules, type ServerRulesSnapshot } from '../../../platform/config/server-rules.js';
 import { Check, Entity, Property, Unique } from '@mikro-orm/decorators/legacy';
 import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
@@ -7,7 +8,7 @@ export interface ModerationRule { id: string; version: string; description: stri
 export interface PolicyRequiredEvidence { ruleId: string; originalBody: boolean; originalMedia: boolean; establishedAuthor: boolean }
 export interface PolicyExclusion { id: string; description: string; ruleIds: string[] }
 export interface PolicyDecisionThresholds { minimumConfidence: number; yesThreshold: number; noThreshold: number }
-export interface PolicyEvaluationConfiguration { schemaVersion: 1; observationModel: string; assessmentModel: string; promptVersion: string; decisionThresholds?: PolicyDecisionThresholds }
+export interface PolicyEvaluationConfiguration { schemaVersion: 1; observationModel: string; assessmentModel: string; promptVersion: string; decisionThresholds?: PolicyDecisionThresholds; decisionMode?: 'autonomous-v1'; serverRules?: ServerRulesSnapshot }
 export interface PolicyActionMapping { ruleId: string; supportedDisposition: 'violation' | 'suspicion'; action: 'ban' | 'warning' | 'none'; deleteMessageSeconds: number }
 export interface ModerationPolicyRevisionInput extends ScopedEntityInput {
   revisionNumber: number;
@@ -45,6 +46,8 @@ export class ModerationPolicyRevision extends ScopedEntity {
     assertDate(input.publishedAt, 'publishedAt');
     invariant(input.publisherRequestId.length > 0, 'Publication requires authenticated request provenance');
     invariant(input.rules.length > 0 && input.rules.length <= 100, 'Policy requires a bounded rule set');
+    const guidance = input.evaluationConfiguration.serverRules;
+    if (guidance) { validateServerRules(guidance); invariant(guidance.guildId === input.guildId, 'Rules belong to another guild'); }
     const thresholds = input.evaluationConfiguration.decisionThresholds;
     if (thresholds) {
       invariant(Number.isFinite(thresholds.minimumConfidence) && thresholds.minimumConfidence > 0.5 && thresholds.minimumConfidence <= 1,

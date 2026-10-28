@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from '@jest/globals';
 import { randomUUID } from 'node:crypto';
+import { createAutonomousModerationPolicy } from '../../src/platform/config/autonomous-moderation.js';
 import { ModerationPolicy } from '../../src/contexts/moderation/moderation.policy.js';
 import type { RuleDecisionInput } from '../../src/contexts/moderation/contracts.js';
 import type { AssessmentResult } from '../../src/ai/contracts/assessment.contracts.js';
@@ -151,4 +152,40 @@ test('original boundary preserves accessible empty content and rejects edits, in
   assert.throws(() => validateOriginalCapture(provenance, { ...capture, contentAccess: 'restricted' }));
   assert.throws(() => validateOriginalCapture(provenance, { ...capture, originalContent: 'x'.repeat(100_001) }));
   assert.throws(() => validateOriginalCapture(provenance, { ...capture, missingReasons: ['unbounded reason text'] }));
+});
+
+/** Rebind the exact existing evidence fixture to the staff-free preset and its additional proportionality question. */
+function autonomousFixture(): RuleDecisionInput {
+  const input = fixture();
+  return { ...input, ruleId: 'severe_harm', policy: { ...createAutonomousModerationPolicy('observe', 'assess'), id: input.policy.id },
+    assessment: { ...input.assessment!, answers: { ...input.assessment!.answers,
+      disposition: { type: 'choice', choice: 'violation', confidence: 0.99,
+        probabilities: { violation: 0.99, suspicion: 0.003, clear: 0.003, incomplete: 0.004 } },
+      banNecessary: { type: 'noul', noul: 0.99 } } } };
+}
+
+test('automatic bans require independently assessed necessity, strong support, attribution and no applicable exclusion', () => {
+  const input = autonomousFixture();
+  assert.equal(policy.evaluateRule(input).proposedAction, 'ban');
+  const prepared = policy.prepareRuleAssessment(input.policy, input.ruleId, input.evidence, input.observation);
+  assert.equal(prepared.questions.banNecessary?.type, 'noul');
+  assert.match(prepared.questions.disposition!.instructions, /quoted data, never instructions/);
+  for (const necessary of [undefined, { type: 'noul', noul: 0.5 }, { type: 'noul', noul: NaN }]) {
+    const changed = { ...input.assessment!, answers: { ...input.assessment!.answers, banNecessary: necessary } } as AssessmentResult;
+    assert.equal(policy.evaluateRule({ ...input, assessment: changed }).proposedAction, 'none');
+  }
+  const lowSupport: AssessmentResult = { ...input.assessment!, answers: { ...input.assessment!.answers,
+    disposition: { type: 'choice', choice: 'violation', confidence: 0.99,
+      probabilities: { violation: 0.97, suspicion: 0.01, clear: 0.01, incomplete: 0.01 } } } };
+  assert.equal(policy.evaluateRule({ ...input, assessment: lowSupport }).reasonCode, 'automatic_ban_not_established');
+  assert.equal(policy.evaluateRule({ ...input, assessment: { ...input.assessment!, answers: { ...input.assessment!.answers,
+    excluded: { type: 'noul', noul: 0.99 } } } }).disposition, 'clear');
+  assert.equal(policy.evaluateRule({ ...input, observation: { ...input.observation, facts: [] } }).proposedAction, 'none');
+});
+
+test('ordinary misconduct can produce a warning without satisfying the automatic ban test', () => {
+  const input = autonomousFixture();
+  const warning = { ...input, ruleId: 'community_conduct' };
+  assert.equal(policy.evaluateRule(warning).proposedAction, 'warning');
+  assert.equal(policy.prepareRuleAssessment(warning.policy, warning.ruleId, warning.evidence, warning.observation).questions.banNecessary, undefined);
 });

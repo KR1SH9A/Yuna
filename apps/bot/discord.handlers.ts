@@ -13,7 +13,9 @@ import type { MemoryService } from '../../src/contexts/memory/memory.service.js'
 import { handleMemoryCommand } from './memory.handlers.js';
 import { handleDebateCommand, type DebateCommands } from './debate.handlers.js';
 import type { UserUsageService, UserUsageStatus } from '../../src/platform/usage/user-usage.service.js';
-import { loadPolicyConfig } from '../../src/platform/config/policy-config.js';
+import type { TrustedCallerContext } from '../../src/contexts/administration/contracts.js';
+import type { PreparedServerConfiguration } from './moderation-setup.handlers.js';
+import { loadPolicyConfig, type YunaPolicyConfig } from '../../src/platform/config/policy-config.js';
 
 export interface AdministrationCommands {
   scope: InstallationScope;
@@ -30,6 +32,7 @@ export interface AdministrationCommands {
   debateAssessmentAvailable?: boolean;
   userUsage?: Pick<UserUsageService, 'readStatus' | 'setLimit' | 'clearLimit'>;
   policyFile?: string;
+  prepareConfiguration?: (settings: YunaPolicyConfig, autonomous: boolean) => Promise<PreparedServerConfiguration>;
   onConfigurationApplied?: () => void;
 }
 
@@ -40,6 +43,7 @@ function statusText(status: OperatorStatus): string {
     `Safety: ${status.paused ? 'paused' : 'running'}; revision ${status.safetyRevision}`,
     `Configuration: ${status.policyRevision}; usage policy: ${status.usagePolicyRevision ?? 'missing'}`,
     `Community: ${status.featureAdmission.community ?? 'disabled'}; moderation: ${status.featureAdmission.moderation ?? 'disabled'}`,
+    ...(status.moderation ? [`Moderation mode: ${status.moderation.mode}; saved rule sources: ${status.moderation.serverRuleSources}; coverage: ${status.moderation.rulesCoverage}`] : []),
     `Pending requests: ${status.pendingRequests}; ready replies: ${status.readyDeliveries}; uncertain sends: ${status.unknownDeliveries}`,
     ...Object.entries(status.cleanupProgress).map(([owner, progress]) => `Cleanup ${owner}: ${progress.disposition}`),
     ...(grants.length ? ['Recent grants (up to 8):', ...grants] : [])].join('\n').slice(0, 1900);
@@ -104,18 +108,20 @@ export async function handleAdministrationCommand(command: NormalizedAdministrat
         return result.status === 'ignored' ? 'Moderation intake is not enabled for this installation.'
           : `Report recorded for case ${result.case.caseId}; ${result.case.phase}; ${result.case.disposition ?? 'pending'}. A report alone does not establish a violation.`;
       }
+      case 'setup': {
+        if (!services.prepareConfiguration) return 'Automatic moderation setup is unavailable in this deployment.';
+        const grant = await services.authority.bootstrapOwner(caller);
+        if (grant.revoked) return 'Owner enrollment is revoked. Automatic moderation setup was not applied.';
+        // Enrollment commits separately, so a later configuration failure must not claim that nothing changed.
+        try { return await configureGuild(caller, services, true); }
+        catch { return 'Owner enrollment is ready, but moderation setup could not be confirmed. Check the model configuration, rules-channel access and /yuna status before retrying.'; }
+      }
       case 'bootstrap': {
         const grant = await services.authority.bootstrapOwner(caller);
         return `Owner enrollment ${grant.revoked ? 'is revoked' : 'is ready'}. Grant: ${grant.grantId}; authority revision ${grant.authorityRevision}; row revision ${grant.rowRevision}.`;
       }
       case 'status': return statusText(await services.configuration.status(caller));
-      case 'configure': {
-        const status = await services.configuration.status(caller);
-        const settings = await loadPolicyConfig(services.policyFile);
-        const result = await services.configuration.applyConfiguration(caller, settings, status.policyRevision);
-        services.onConfigurationApplied?.();
-        return `Configuration ${result.changed ? 'applied' : 'already current'}. Policy revision ${result.policyRevision}; usage revision ${result.usagePolicyRevision}.`;
-      }
+      case 'configure': return await configureGuild(caller, services, false);
       case 'grant': {
         const grant = await services.authority.grantCapability(caller, command.arguments);
         return `Grant: ${grant.grantId}; authority revision ${grant.authorityRevision}; row revision ${grant.rowRevision}.`;
@@ -147,4 +153,17 @@ export async function handleAdministrationCommand(command: NormalizedAdministrat
     // Provider/SQL/SDK errors can contain content or credentials. Operators receive no raw error text.
     return 'The command was not applied. Check your current permissions, configuration and revisions with /yuna status, then retry.';
   }
+}
+
+/** Authorize before Discord discovery, then reauthorize the captured configuration at its exact stored revision. */
+async function configureGuild(caller: TrustedCallerContext, services: AdministrationCommands, autonomous: boolean): Promise<string> {
+  const status = await services.configuration.status(caller);
+  const settings = await loadPolicyConfig(services.policyFile);
+  const prepared = services.prepareConfiguration ? await services.prepareConfiguration(settings, autonomous) : { config: settings, rules: null };
+  const result = await services.configuration.applyConfiguration(caller, prepared.config, status.policyRevision);
+  services.onConfigurationApplied?.();
+  const rules = prepared.rules ? ` Remembered ${prepared.rules.count} server guidance sources (${prepared.rules.coverage} coverage).` : '';
+  const automatic = prepared.config.moderation.enabled && prepared.config.moderation.policy?.evaluationConfiguration.decisionMode === 'autonomous-v1';
+  return `Configuration ${result.changed ? 'applied' : 'already current'}. Policy revision ${result.policyRevision}; usage revision ${result.usagePolicyRevision}.`
+    + (automatic ? ' Automatic AI moderation is enabled: warnings for supported misconduct and bans for clearly established severe harm.' : '') + rules;
 }

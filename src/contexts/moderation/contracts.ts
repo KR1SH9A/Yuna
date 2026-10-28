@@ -13,6 +13,7 @@ export interface EvidenceBinding {
   readonly sourceUse: 'original_evidence';
 }
 export interface ModerationEvidence extends EvidenceBinding {
+  readonly sourceChannelId?: string;
   readonly originalContent: string | null;
   readonly authorKind: 'user' | 'bot' | 'webhook' | 'system' | 'unknown';
   readonly originalAuthorUserId: string | null;

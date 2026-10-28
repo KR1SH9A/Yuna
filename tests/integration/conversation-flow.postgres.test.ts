@@ -15,6 +15,7 @@ import { WorkerTaskStore } from '../../src/platform/jobs/worker-task.store.js';
 import { LlmService } from '../../src/ai/llm/llm.service.js';
 import type { DiscordGateway } from '../../src/discord/discord.module.js';
 import type { DiscordReplyRequest, NormalizedConversationMessage } from '../../src/discord/contracts.js';
+import { chatContext } from '../helpers/chat-context.js';
 
 let database: ReturnType<typeof temporaryPostgres>;
 let botOrm: MikroORM;
@@ -109,6 +110,55 @@ test('durable fake generation is accepted once and produces one Discord reply', 
   const receipts = await botOrm.em.fork().execute<{ owner: string; state: string; outcome: string }[]>(
     'select owner,state,outcome from intake_delivery where installation_id=?', [f.scope.installationId]);
   assert.deepEqual(receipts, [{ owner: 'community', state: 'DONE', outcome: 'handled' }]);
+});
+
+test('same-channel context survives durable worker disclosure and drives a normal reply', async () => {
+  const f = await scenario(), context = chatContext(f.message);
+  assert.equal(await f.conversation.receiveInput({ ...f.message, chatContext: context }), 'admitted');
+  const claim = await worker.claimNext('context-worker', f.model); assert.ok(claim);
+  const input = await worker.releasePreparedInput(claim); assert.ok(input);
+  assert.deepEqual(input.chatContext, context);
+  assert.equal(await worker.recordProviderStart(claim), true);
+  assert.equal(await worker.recordResult(claim, { outcome: 'success', reason: 'completed', payload: await fakeLlm.generateReply(input) }), 'stored');
+  assert.equal(await f.conversation.acceptReplyResults(), 1);
+  await f.delivery.dispatchReadyDeliveries(new AbortController().signal); assert.equal(f.sent.length, 1);
+});
+
+test.each(['before_claim', 'before_disclosure', 'before_start', 'before_send'] as const)(
+  'editing a selected context message blocks future work %s', async phase => {
+    const f = await scenario(), context = chatContext(f.message);
+    assert.equal(await f.conversation.receiveInput({ ...f.message, chatContext: context }), 'admitted');
+    const claim = phase === 'before_claim' ? null : await worker.claimNext('context-worker', f.model);
+    const input = claim && ['before_start', 'before_send'].includes(phase) ? await worker.releasePreparedInput(claim) : null;
+    if (phase === 'before_send') {
+      assert.ok(claim && input); assert.equal(await worker.recordProviderStart(claim), true);
+      await worker.recordResult(claim, { outcome: 'success', reason: 'completed', payload: await fakeLlm.generateReply(input) });
+      assert.equal(await f.conversation.acceptReplyResults(), 1);
+    }
+    await f.conversation.cancelRequest({ ...f.message, messageId: context.messages[0]!.id });
+    if (phase === 'before_claim') assert.equal(await worker.claimNext('context-worker', f.model), null);
+    if (phase === 'before_disclosure') { assert.ok(claim); assert.equal(await worker.releasePreparedInput(claim), null); }
+    if (phase === 'before_start') { assert.ok(claim); assert.equal(await worker.recordProviderStart(claim), false); }
+    if (phase === 'before_send') { await f.delivery.dispatchReadyDeliveries(new AbortController().signal); assert.equal(f.sent.length, 0); }
+  });
+
+test('a context tombstone precedes late admission and cross-channel snapshots are rejected', async () => {
+  const f = await scenario(), context = chatContext(f.message);
+  await f.conversation.cancelRequest({ ...f.message, messageId: context.messages[0]!.id });
+  assert.equal(await f.conversation.receiveInput({ ...f.message, chatContext: context }), 'admitted');
+  const claim = await worker.claimNext('context-worker', f.model); assert.ok(claim);
+  assert.deepEqual((await worker.releasePreparedInput(claim))?.chatContext?.messages, []);
+  const g = await scenario();
+  await assert.rejects(g.conversation.receiveInput({ ...g.message, chatContext: { ...chatContext(g.message), channelId: '999' } }), /another source/);
+});
+
+test('the restricted worker independently rejects a stale context row even before owner cancellation runs', async () => {
+  const f = await scenario(), context = chatContext(f.message);
+  await f.conversation.receiveInput({ ...f.message, chatContext: context });
+  const claim = await worker.claimNext('context-worker', f.model); assert.ok(claim);
+  await botOrm.em.fork().execute("update intake_event set source_validity='unresolved' where installation_id=? and source_key=?",
+    [f.scope.installationId, `context:${f.message.channelId}:${context.messages[0]!.id}`]);
+  assert.equal(await worker.releasePreparedInput(claim), null);
 });
 
 test('concurrent duplicate Discord observations admit one request and one generation', async () => {

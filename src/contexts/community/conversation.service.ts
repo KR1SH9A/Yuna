@@ -1,5 +1,7 @@
 /** Admit bounded Discord requests and atomically accept current generation results for delivery. */
 import { ReplyPolicy } from './reply.policy.js';
+import { prepareChatContext } from '../../ai/contracts/chat-context.js';
+import { IntakeEvent } from '../../platform/intake/entities/intake-event.entity.js';
 import type { ConversationAdmission, ChannelReplySettingsDto, ChannelReplySettingsUpdate, CommunityOperationalStatus } from './dto/conversation.dto.js';
 import { LockMode } from '@mikro-orm/core';
 import type { EntityManager, MikroORM } from '@mikro-orm/postgresql';
@@ -53,7 +55,7 @@ export class ConversationService {
     } else {
       invariant(input.expectedRowRevision === null, 'Channel settings revision does not exist');
       settings = new ChannelReplySettings({ ...this.scope, createdAt: at, channelId: input.channelId, mode: input.mode,
-        approvedKnowledgeScope: { schemaVersion: 1, entryIds: [] }, limits: { schemaVersion: 1, maxContextMessages: 1, maxContextCharacters: 6000, deadlineSeconds: 120 } });
+        approvedKnowledgeScope: { schemaVersion: 1, entryIds: [] }, limits: { schemaVersion: 1, maxContextMessages: 8, maxContextCharacters: 6000, deadlineSeconds: 120 } });
       em.persist(settings);
     }
     await this.invalidatePending(em, 'channel_settings_changed', at, input.channelId);
@@ -74,6 +76,8 @@ export class ConversationService {
     const now = new Date();
     const deadline = new Date(Math.min(input.createdAt.getTime(), now.getTime()) + 120_000);
     if (!ReplyPolicy.shouldConsiderReply(input, this.scope.guildId, 'direct', now)) return 'ignored';
+    const context = input.chatContext ? prepareChatContext(input.chatContext) : undefined;
+    invariant(!context || (context.guildId === input.guildId && context.channelId === input.channelId && context.sourceMessageId === input.messageId), 'Context belongs to another source');
     const result = await this.orm.em.fork().transactional(async em => {
       const admission = await this.administration.lockAdmission(em, this.scope);
       if (!admission) return 'ignored';
@@ -81,7 +85,7 @@ export class ConversationService {
       if (pending >= 20) return 'busy';
       let settings = await em.findOne(ChannelReplySettings, { ...this.scope, channelId: input.channelId });
       if (!settings) {
-        settings = new ChannelReplySettings({ ...this.scope, createdAt: now, channelId: input.channelId, mode: 'direct', approvedKnowledgeScope: { schemaVersion: 1, entryIds: [] }, limits: { schemaVersion: 1, maxContextMessages: 1, maxContextCharacters: 6000, deadlineSeconds: 120 } });
+        settings = new ChannelReplySettings({ ...this.scope, createdAt: now, channelId: input.channelId, mode: 'direct', approvedKnowledgeScope: { schemaVersion: 1, entryIds: [] }, limits: { schemaVersion: 1, maxContextMessages: 8, maxContextCharacters: 6000, deadlineSeconds: 120 } });
         em.persist(settings);
       }
       if (!ReplyPolicy.shouldConsiderReply(input, this.scope.guildId, settings.mode, now)) return 'ignored';
@@ -90,10 +94,24 @@ export class ConversationService {
       const metadataPurgeAfter = new Date(now.getTime() + policy.retention.metadataDays * 86400_000);
       const observation = await this.intake.receiveInput(em, this.scope, input, now, deadline, purgeAfter, metadataPurgeAfter);
       if (!observation) return 'duplicate';
+      // Honor channel limits without cutting an individual message or claiming a complete directory.
+      const selectedContext = context ? { ...context, messages: context.messages.slice(-Math.min(8, settings.limits.maxContextMessages)),
+        publicChannels: [...context.publicChannels] } : undefined;
+      if (selectedContext && settings.limits.maxContextMessages === 0) selectedContext.messages = [];
+      const contextBudget = Math.min(6000, settings.limits.maxContextCharacters) - input.text.length - (input.previousReply?.length ?? 0);
+      if (selectedContext) {
+        while (JSON.stringify(selectedContext).length > contextBudget && selectedContext.messages.length) selectedContext.messages = selectedContext.messages.slice(1);
+        while (JSON.stringify(selectedContext).length > contextBudget && selectedContext.publicChannels.length) {
+          selectedContext.publicChannels.pop(); selectedContext.directoryPartial = true;
+        }
+      }
+      const chat = selectedContext && JSON.stringify(selectedContext).length <= contextBudget
+        ? await this.intake.bindChatContext(em, this.scope, selectedContext, now, { purgeAfter, metadataPurgeAfter }) : undefined;
       const audience: AudienceBinding = { schemaVersion: 1, visibility: 'channel', channelId: input.channelId, requesterUserId: input.authorId, revision: 1 };
       const visible = await this.knowledge?.findVisibleEntries(em, { search: input.text, entryIds: settings.approvedKnowledgeScope.entryIds }, audience, new Date()) ?? [];
-      // Keep the original total context bound: knowledge uses only space left after source text and the previous reply.
-      let remaining = Math.min(6_000, settings.limits.maxContextCharacters) - input.text.length - (input.previousReply?.length ?? 0);
+      // Keep the same total bound; current chat and approved knowledge share the remaining capacity.
+      let remaining = Math.min(6_000, settings.limits.maxContextCharacters) - input.text.length - (input.previousReply?.length ?? 0)
+        - (chat ? JSON.stringify(chat.context).length : 0);
       const selected = visible.filter(entry => {
         if (!entry.content || entry.content.length > remaining) return false;
         remaining -= entry.content.length; return true;
@@ -101,10 +119,12 @@ export class ConversationService {
       const request = new ConversationRequest({ ...this.scope, createdAt: now, requestKey: `message:${input.channelId}:${input.messageId}`,
         source: { kind: 'message', channelId: input.channelId, messageId: input.messageId }, sourceVersion: observation.revision,
         settingsRevision: settings.rowRevision, contextBindings: [{ owner: 'intake', recordId: observation.eventId, revision: observation.revision, contentHash: input.sourceHash },
+          ...(chat?.bindings ?? []),
           ...selected.map(entry => ({ owner: 'knowledge' as const, recordId: entry.entryId, revision: entry.rowRevision, contentHash: entry.contentHash }))],
         audienceBinding: audience, deadline, purgeAfter });
       const taskId = this.tasks.registerTask(em, { ...this.scope, requestId: request.id,
         input: { text: input.text, ...(input.previousReply ? { previousReply: input.previousReply } : {}), maxOutputTokens: 512,
+          ...(chat ? { chatContext: chat.context } : {}),
           ...(selected.length ? { approvedKnowledge: selected.map(entry => ({ entryId: entry.entryId, content: entry.content!, contentHash: entry.contentHash, revision: entry.rowRevision })) } : {}) },
         ...(selected.length ? { knowledgeChannelId: input.channelId } : {}),
         sourceEventId: observation.eventId, sourceRevision: observation.revision, safetyRevision: admission.safetyRevision,
@@ -127,6 +147,19 @@ export class ConversationService {
       const now = new Date();
       const eventId = await this.intake.invalidate(em, this.scope, reference, now);
       if (eventId) await this.tasks.invalidateSource(em, this.scope, eventId, now);
+      const context = await em.findOne(IntakeEvent, { ...this.scope, sourceKey: `context:${reference.channelId}:${reference.messageId}` });
+      if (context) {
+        const dependent = await em.find(ConversationRequest, { ...this.scope, sourceChannelId: reference.channelId,
+          stage: { $in: ['generating', 'accepted'] }, canceledAt: null, deadline: { $gt: now } });
+        for (const request of dependent) {
+          if (!request.contextBindings?.some(binding => binding.owner === 'intake' && binding.recordId === context.id)) continue;
+          const primary = request.contextBindings.find(binding => binding.owner === 'intake');
+          if (primary) await this.tasks.invalidateSource(em, this.scope, primary.recordId, now);
+          request.cancel('context_changed', request.rowRevision, now);
+          const reply = await em.findOne(ReplyDelivery, { ...this.scope, requestId: request.id, state: 'READY' });
+          if (reply) reply.cancelBeforeDispatch('context_changed', reply.rowRevision, now);
+        }
+      }
       const request = await em.findOne(ConversationRequest, { ...this.scope, sourceChannelId: reference.channelId, sourceMessageId: reference.messageId }, { lockMode: LockMode.PESSIMISTIC_WRITE });
       if (!request) return;
       request.cancel('source_changed', request.rowRevision, now);
@@ -151,9 +184,10 @@ export class ConversationService {
         const text = completion.payload?.text;
         const knowledgeCurrent = !request?.contextBindings?.some(binding => binding.owner === 'knowledge')
           || Boolean(this.knowledge && await this.knowledge.validateBindings(em, request.contextBindings, request.audienceBinding, now));
+        const contextCurrent = request && await this.intake.validateContextBindings(em, this.scope, request.contextBindings);
         const valid = admission && admission.safetyRevision === completion.safetyRevision && source && request && settings?.mode === 'direct' && settings.rowRevision === request.settingsRevision
           && request.stage === 'generating' && request.expectedTaskId === completion.taskId && !request.canceledAt && request.deadline > now && !request.payloadPurgedAt
-          && knowledgeCurrent && ReplyPolicy.validateAudience(request.audienceBinding, request.sourceChannelId)
+          && contextCurrent && knowledgeCurrent && ReplyPolicy.validateAudience(request.audienceBinding, request.sourceChannelId)
           && completion.outcome === 'success' && ReplyPolicy.validateReply(text);
         if (valid && request) {
           request.acceptReply({ taskId: completion.taskId, resultId: completion.resultId, sourceVersion: completion.sourceRevision, cancellationGeneration: request.cancellationGeneration, expectedRowRevision: request.rowRevision, at: now });

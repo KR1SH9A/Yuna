@@ -80,6 +80,8 @@ function harness() {
     async receiveInput() { return { revision: 1, eventId: sourceEventId, receipt: { claimGeneration: 1, /** Record that the fixture ingress receipt has completed. */ complete() {} } }; },
     /** Return the fixture current-source marker used by disclosure and delivery checks. */
     async current() { return { hash: message.sourceHash }; },
+    /** This timing fixture uses one unchanged source; context invalidation has PostgreSQL coverage. */
+    async validateContextBindings() { return true; },
   } as unknown as IntakeService;
   const tasks = {
     /** Capture the service's task registration and expose its durable task ID. */

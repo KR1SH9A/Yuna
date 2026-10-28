@@ -19,6 +19,17 @@ const originalSource = { guild_id: source.guildId, channel_id: source.channelId,
   timestamp: '2026-10-20T00:00:00.000Z', edited_timestamp: null, mentions: [], attachments: [] };
 const originalContext = { botUserId: botId, hasMessageContent: true, observedAt: new Date('2026-10-20T00:00:01Z') };
 
+test('calling Yuna by name needs no slash command or Discord ping and unrelated chat stays quiet', () => {
+  for (const content of ['Yuna help me', 'hey YUNA, where should I post?', 'can you help, yuna?', 'Ｙｕｎａ']) {
+    assert.equal(normalizeConversationMessage({ ...source, content, directlyMentionsBot: false }, botId)?.text, content);
+  }
+  for (const content of ['hello everyone', 'Yunaverse', 'my_yuna_bot', '`Yuna`', '```\nYuna help\n```', '> Yuna, help me']) {
+    assert.equal(normalizeConversationMessage({ ...source, content, directlyMentionsBot: false }, botId), null);
+  }
+  assert.equal(normalizeConversationMessage({ ...source, content: 'thanks', directlyMentionsBot: false }, botId, 'Previous Yuna answer')?.text, 'thanks');
+  assert.equal(normalizeConversationMessage({ ...source, content: 'Yuna help', directlyMentionsBot: false, authorIsBot: true }, botId), null);
+});
+
 test('original capture preserves exact text, empty accessible content and detached bounded metadata', () => {
   const attachment = { id: source.authorId, filename: 'original name.png', content_type: 'image/png', size: 42,
     description: 'exact description', url: `https://example.invalid/${source.authorId}?secret=do-not-retain` };
@@ -230,4 +241,10 @@ test('channel status defaults to the authenticated source channel and accepts on
   assert.equal(command([{ name: 'channel', type: 3, value: '999' }]), null);
   assert.equal(command([{ name: 'channel', type: 7, value: 'invalid' }]), null);
   assert.equal(command([{ name: 'actorId', type: 3, value: '999' }]), null);
+});
+
+test('automatic setup is a parameter-free authenticated command', () => {
+  const source = { actorId: '1', actorIsBot: false, guildId: '2', channelId: '3', sourceRequestId: '4', commandName: 'yuna' };
+  assert.equal(normalizeAdministrationCommand({ ...source, options: [{ name: 'setup', type: 1 }] })?.command, 'setup');
+  assert.equal(normalizeAdministrationCommand({ ...source, options: [{ name: 'setup', type: 1, options: [{ name: 'target', type: 3, value: '5' }] }] }), null);
 });

@@ -1,5 +1,6 @@
 /** Execute the original-evidence workflow with real PostgreSQL runtime roles and injected provider outcomes. */
 import assert from 'node:assert/strict';
+import { createHash as hashRules } from 'node:crypto';
 import { afterAll, beforeAll, test } from '@jest/globals';
 import { AuditEntry } from '../../src/platform/audit/entities/audit-entry.entity.js';
 import { LockMode, type FlushEventArgs } from '@mikro-orm/core';
@@ -60,6 +61,12 @@ async function fixture(options: { starter?: boolean; content?: string } = {}) {
     actionMapping: [{ ruleId: 'abuse', supportedDisposition: 'violation', action: 'ban', deleteMessageSeconds: 0 },
       { ruleId: 'abuse', supportedDisposition: 'suspicion', action: 'warning', deleteMessageSeconds: 0 }],
   } } });
+  if (options.starter) {
+    const content = 'Use the proper channel for recruitment.';
+    config.moderation.policy!.evaluationConfiguration.serverRules = { schemaVersion: 1, guildId: scope.guildId,
+      observedAt: new Date().toISOString(), coverage: 'complete', sources: [{ kind: 'message', channelId: '900000000000000006',
+        messageId: '900000000000000007', authorId: '900000000000000002', content, contentHash: hashRules('sha256').update(content).digest('hex') }] };
+  }
   const caller = { ...scope, actorId: '900000000000000002', sourceRequestId: `publish-${sequence}` };
   await bot.em.fork().transactional(async em => {
     const installation = await em.findOneOrFail(GuildInstallation, scope.installationId, { lockMode: LockMode.PESSIMISTIC_WRITE }); const now = new Date();
@@ -252,43 +259,35 @@ test('multiple configured rules share one observation, persist sequential findin
   assert.equal(await bot.em.fork().count(TaskAcceptance, f.scope), 3);
 });
 
-test('the shipped four-rule starter produces one warning for multiple supported violations and never a ban', async () => {
-  const f = await fixture({ starter: true, content: 'Pat, I will hurt you. Send me your account password now.' });
+test.each([true, false])('automatic moderation chooses one ban only when severe harm and proportionality are established (%s)', async severe => {
+  const f = await fixture({ starter: true, content: 'Original conduct for a controlled assessment fixture.' });
   const configured = f.config.moderation.policy!;
-  assert.deepEqual(configured.rules.map(rule => rule.id), ['harassment', 'threats', 'privacy', 'scams']);
-  assert.equal(f.config.moderation.enabled, true);
+  assert.deepEqual(configured.rules.map(rule => rule.id), ['community_conduct', 'severe_harm']);
   await observe(f);
   for (const [index, rule] of configured.rules.entries()) {
     const { claim, prepared } = await dispatch(f, 'moderation.assess');
     assert.equal(prepared.kind, 'moderation.assess'); if (prepared.kind !== 'moderation.assess') throw new Error('Expected starter assessment');
     assert.deepEqual(prepared.input.state.rule, { id: rule.id, version: rule.version, description: rule.description });
     assert.equal(prepared.input.state.originalBody, f.content);
-    assert.deepEqual(prepared.input.state.exclusions, configured.exclusions.filter(item => item.ruleIds.includes(rule.id))
-      .map(item => ({ id: item.id, description: item.description })));
+    assert.equal(prepared.input.state.sourceChannelId, f.provenance.channelId);
+    assert.deepEqual(prepared.input.state.serverGuidance, configured.evaluationConfiguration.serverRules);
+    if (rule.id === 'severe_harm') assert.equal(prepared.input.questions.banNecessary?.type, 'noul');
     const result = await assessment(f);
-    if (rule.id === 'harassment' || rule.id === 'privacy') {
-      const clear: AssessmentResult = { ...result, answers: { ...result.answers, disposition: { type: 'choice', choice: 'clear', confidence: 0.99,
-        probabilities: { violation: 0.01, suspicion: 0.01, clear: 0.97, incomplete: 0.01 } } } };
-      assert.equal(await finishAssessment(f, claim, clear), 'stored');
-    } else assert.equal(await finishAssessment(f, claim, result), 'stored');
+    const judged: AssessmentResult = { ...result, answers: { ...result.answers,
+      disposition: { type: 'choice', choice: 'violation', confidence: 0.99,
+        probabilities: { violation: 0.99, suspicion: 0.003, clear: 0.003, incomplete: 0.004 } },
+      ...(rule.id === 'severe_harm' ? { banNecessary: { type: 'noul' as const, noul: severe ? 0.99 : 0.5 } } : {}) } };
+    assert.equal(await finishAssessment(f, claim, judged), 'stored');
     const reference = (await tasks.pendingResults(bot.em.fork(), f.scope))[0]!;
     assert.equal(await f.workflow.acceptResult(reference), 'accepted');
     assert.equal(await bot.em.fork().count(ModerationAction, f.scope), index === configured.rules.length - 1 ? 1 : 0);
   }
-  const findings = await bot.em.fork().find(ModerationFinding, f.scope);
-  assert.equal(findings.length, 4);
-  assert.deepEqual(findings.filter(finding => finding.disposition === 'violation').map(finding => finding.ruleId).sort(), ['scams', 'threats']);
   const action = await bot.em.fork().findOneOrFail(ModerationAction, f.scope, { populate: ['findings'] });
-  assert.equal(action.kind, 'warning'); assert.equal(action.operationPayload?.kind, 'warning');
-  assert.equal(action.findings.length, 2); assert.equal(await bot.em.fork().count(ModerationAction, { ...f.scope, kind: 'ban' }), 0);
-  if (action.operationPayload?.kind !== 'warning') throw new Error('Expected the starter warning');
-  assert.deepEqual(action.operationPayload.destination, { kind: 'direct_message' });
-  assert.deepEqual(action.operationPayload.allowedMentions, { users: [], roles: [], everyone: false });
+  assert.equal(action.kind, severe ? 'ban' : 'warning'); assert.equal(action.findings.length, 1);
+  if (action.operationPayload?.kind === 'ban') assert.equal(action.operationPayload.deleteMessageSeconds, 0);
   assert.equal(await bot.em.fork().count(AiTask, { ...f.scope, kind: 'moderation.observe' }), 1);
-  assert.equal(await bot.em.fork().count(AiTask, { ...f.scope, kind: 'moderation.assess' }), 4);
-  assert.equal(await bot.em.fork().count(TaskAcceptance, f.scope), 5);
-  assert.equal(await bot.em.fork().count(AuditEntry, { ...f.scope, operation: 'moderation.finding' }), 4);
-  assert.equal(await bot.em.fork().count(AuditEntry, { ...f.scope, operation: 'moderation.intent' }), 1);
+  assert.equal(await bot.em.fork().count(AiTask, { ...f.scope, kind: 'moderation.assess' }), 2);
+  assert.equal(await bot.em.fork().count(TaskAcceptance, f.scope), 3);
   const runtime = await effects(f), signal = new AbortController().signal;
   assert.equal((await runtime.service.dispatch(action.id, signal))?.state, 'CONFIRMED');
   assert.equal((await runtime.service.dispatch(action.id, signal))?.state, 'CONFIRMED');
@@ -303,7 +302,7 @@ test('the shipped context exclusion clears reported quotations even when advisor
     assert.equal(prepared.kind, 'moderation.assess'); if (prepared.kind !== 'moderation.assess') throw new Error('Expected starter assessment');
     const exclusions = f.config.moderation.policy!.exclusions.filter(item => item.ruleIds.includes(rule.id));
     assert.equal(exclusions.length, 1); assert.equal(exclusions[0]!.id, 'context');
-    assert.match(exclusions[0]!.description, /quotations, incident reports/);
+    assert.match(exclusions[0]!.description, /good-faith reporting, quotation/);
     assert.deepEqual(prepared.input.state.exclusions, exclusions.map(item => ({ id: item.id, description: item.description })));
     const result = await assessment(f);
     assert.equal(await finishAssessment(f, claim, { ...result, answers: { ...result.answers,
@@ -313,13 +312,13 @@ test('the shipped context exclusion clears reported quotations even when advisor
     assert.equal(await bot.em.fork().count(ModerationAction, f.scope), 0);
   }
   const findings = await bot.em.fork().find(ModerationFinding, f.scope);
-  assert.equal(findings.length, 4);
+  assert.equal(findings.length, f.config.moderation.policy!.rules.length);
   for (const finding of findings) {
     assert.equal(finding.disposition, 'clear'); assert.deepEqual(finding.exclusions, ['configured_exclusion_applies']);
   }
   const record = await bot.em.fork().findOneOrFail(ModerationCase, { ...f.scope, id: f.caseId });
   assert.equal(record.workflowPhase, 'complete'); assert.equal(record.disposition, 'clear');
-  assert.equal(await bot.em.fork().count(TaskAcceptance, f.scope), 5);
+  assert.equal(await bot.em.fork().count(TaskAcceptance, f.scope), 1 + f.config.moderation.policy!.rules.length);
   assert.equal(await bot.em.fork().count(AuditEntry, { ...f.scope, operation: 'moderation.intent' }), 0);
 });
 

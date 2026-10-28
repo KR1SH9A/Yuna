@@ -1,4 +1,7 @@
 /** Read bounded current Discord facts; absence, unavailable access and attributable evidence stay distinct. */
+import { createHash } from 'node:crypto';
+import { prepareChatContext, type ChatContext } from '../ai/contracts/chat-context.js';
+import { validateServerRules, type ServerRulesSnapshot } from '../platform/config/server-rules.js';
 import { GatewayIntentBits, MessageType, PermissionFlagsBits, Routes, type APIMessage, type Client } from 'discord.js';
 import { assertDiscordId, invariant } from '../platform/db/entity-values.js';
 import { discordGrantCapabilities, type DiscordAuthorityCaller, type DiscordAuthorityOperation,
@@ -87,6 +90,153 @@ function fromRest(message: APIMessage, guildId: string): ConversationSourceSnaps
 export class DiscordStateReader {
   /** Capture lifecycle readers without retaining a stale SDK session or starting network work. */
   constructor(private readonly guildId: string, private readonly dependencies: DiscordStateReaderDependencies) { assertDiscordId(guildId); }
+
+  /** Read recent same-channel chat only when called; public channel names never expose a staff/private directory. */
+  async readConversationContext(reference: MessageReference & { authorId: string; createdAt: Date }, maxCharacters: number,
+    signal: AbortSignal): Promise<ChatContext | undefined> {
+    const epoch = this.dependencies.getEpoch();
+    const combined = AbortSignal.any([signal, this.dependencies.shutdownSignal, AbortSignal.timeout(5000)]);
+    try {
+      for (const id of [reference.guildId, reference.channelId, reference.messageId, reference.authorId]) assertDiscordId(id);
+      const client = this.dependencies.getClient(), guild = client?.guilds.cache.get(this.guildId);
+      const channel = client?.channels.cache.get(reference.channelId);
+      if (!client?.user || !guild || !channel || !('guildId' in channel) || channel.guildId !== this.guildId
+        || !channel.isSendable() || !this.current(reference.guildId, epoch, combined)
+        || !channel.permissionsFor(client.user)?.has(PermissionFlagsBits.ViewChannel)) return undefined;
+      const budget = Math.min(5000, maxCharacters);
+      const snapshot: { -readonly [K in keyof ChatContext]: ChatContext[K] } = {
+        guildId: this.guildId, channelId: reference.channelId, sourceMessageId: reference.messageId,
+        guildName: guild.name, channelName: channel.name, publicChannels: [], directoryPartial: false, history: 'unavailable', messages: [],
+      };
+      if (JSON.stringify(snapshot).length > budget) return undefined;
+      const everyone = guild.roles.everyone;
+      // A public answer can name only this channel and channels visible to @everyone and the bot.
+      const publicChannels = [...guild.channels.cache.values()].filter(candidate => !candidate.isThread()
+        && candidate.permissionsFor(everyone)?.has(PermissionFlagsBits.ViewChannel)
+        && candidate.permissionsFor(client.user!)?.has(PermissionFlagsBits.ViewChannel))
+        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      const directory: { id: string; name: string }[] = [];
+      snapshot.publicChannels = directory;
+      for (const candidate of publicChannels) {
+        directory.push({ id: candidate.id, name: candidate.name });
+        if (directory.length > 24 || JSON.stringify(snapshot).length > Math.min(budget, 2200)) {
+          directory.pop(); snapshot.directoryPartial = true; break;
+        }
+      }
+      const canRead = client.options.intents.has(GatewayIntentBits.MessageContent)
+        && channel.permissionsFor(client.user)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
+        && channel.permissionsFor(reference.authorId)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]);
+      if (canRead) {
+        try {
+          // One bounded page before the caller's message: https://docs.discord.com/developers/resources/message#get-channel-messages
+          const raw = await client.rest.get(Routes.channelMessages(reference.channelId), {
+            signal: combined, query: new URLSearchParams({ before: reference.messageId, limit: '20' }),
+          });
+          invariant(Array.isArray(raw) && raw.length <= 20, 'Invalid recent history');
+          const selected: ChatContext['messages'][number][] = [];
+          snapshot.history = 'recent'; snapshot.messages = selected;
+          const at = reference.createdAt.getTime();
+          for (const message of [...raw].sort((a, b) => String(b.id).localeCompare(String(a.id)))) {
+            if (message?.channel_id !== reference.channelId || message.webhook_id || ![0, 19].includes(message.type)
+              || !message.author || (message.author.bot && message.author.id !== client.user.id)
+              || typeof message.content !== 'string' || !message.content.trim() || message.content.length > 2000) continue;
+            assertDiscordId(message.id); assertDiscordId(message.author.id);
+            const created = Date.parse(message.timestamp);
+            if (BigInt(message.id) >= BigInt(reference.messageId) || !Number.isFinite(created) || created > at || created < at - 15 * 60_000) continue;
+            const authorName = message.author.global_name ?? message.author.username;
+            if (typeof authorName !== 'string' || authorName.length === 0 || authorName.length > 100) continue;
+            selected.push({ id: message.id, authorId: message.author.id, authorName, isYuna: message.author.id === client.user.id,
+              content: message.content, contentHash: createHash('sha256').update(message.content).digest('hex'), createdAt: new Date(created).toISOString() });
+            if (JSON.stringify(snapshot).length > budget) { selected.pop(); break; }
+            if (selected.length === 8) break;
+          }
+          selected.reverse();
+        } catch { snapshot.history = 'unavailable'; snapshot.messages = []; }
+      }
+      if (!this.current(reference.guildId, epoch, combined)) return undefined;
+      return prepareChatContext(snapshot);
+    } catch { return undefined; }
+  }
+
+  /** Discover bounded official guidance from rules channels; only current owner/administrator/Manage Guild authors are retained. */
+  async readServerRules(signal: AbortSignal): Promise<ServerRulesSnapshot> {
+    const unavailable: ServerRulesSnapshot = { schemaVersion: 1, guildId: this.guildId,
+      observedAt: new Date().toISOString(), coverage: 'unavailable', sources: [] };
+    const epoch = this.dependencies.getEpoch();
+    const combined = AbortSignal.any([signal, this.dependencies.shutdownSignal, AbortSignal.timeout(10_000)]);
+    try {
+      const client = this.dependencies.getClient();
+      if (!client || !this.current(this.guildId, epoch, combined) || !client.options.intents.has(GatewayIntentBits.MessageContent)) return unavailable;
+      // Discord designates a rules channel on Community guilds; named rules/guidelines channels support other guilds.
+      // https://docs.discord.com/developers/resources/guild#get-guild-channels
+      const [rawGuild, rawChannels, rawRoles] = await Promise.all([
+        client.rest.get(Routes.guild(this.guildId), { signal: combined }),
+        client.rest.get(Routes.guildChannels(this.guildId), { signal: combined }),
+        client.rest.get(Routes.guildRoles(this.guildId), { signal: combined }),
+      ]);
+      const guild = rawGuild as { id?: string; owner_id?: string; rules_channel_id?: string | null };
+      invariant(guild?.id === this.guildId, 'Wrong rules guild'); assertDiscordId(guild.owner_id!);
+      invariant(Array.isArray(rawChannels) && rawChannels.length <= 500 && Array.isArray(rawRoles) && rawRoles.length <= 1000, 'Unbounded rules metadata');
+      const roles = new Map<string, NativeRole>();
+      for (const value of rawRoles) {
+        const role = value as NativeRole; assertDiscordId(role.id);
+        invariant(!roles.has(role.id) && Number.isSafeInteger(role.position) && role.position >= 0
+          && typeof role.permissions === 'string' && /^[0-9]{1,40}$/.test(role.permissions), 'Invalid rules author roles');
+        roles.set(role.id, { ...role });
+      }
+      invariant(roles.has(this.guildId), 'Missing everyone role');
+      const channels = rawChannels.filter(value => value && value.guild_id === this.guildId && [0, 5].includes(value.type)
+        && (value.id === guild.rules_channel_id || (typeof value.name === 'string'
+          && /(?:^|[^a-z])(?:rules|guidelines|code[-_ ]of[-_ ]conduct)(?:$|[^a-z])/.test(value.name.normalize('NFKC').toLowerCase()))))
+        .sort((a, b) => Number(b.id === guild.rules_channel_id) - Number(a.id === guild.rules_channel_id) || String(a.id).localeCompare(String(b.id)));
+      const sources: ServerRulesSnapshot['sources'] = [];
+      let bytes = 0, partial = channels.length > 5 || Boolean(guild.rules_channel_id && !channels.some(channel => channel.id === guild.rules_channel_id));
+      const authors = new Map<string, boolean>();
+      /** Retain complete source texts only; truncating a rule can reverse its meaning or omit an exclusion. */
+      const retain = (source: Omit<ServerRulesSnapshot['sources'][number], 'contentHash'>) => {
+        if (!source.content.trim()) return;
+        if (sources.length >= 8 || source.content.length > 4000 || bytes + Buffer.byteLength(source.content, 'utf8') > 8192) { partial = true; return; }
+        if (sources.some(value => value.channelId === source.channelId && value.messageId === source.messageId)) return;
+        bytes += Buffer.byteLength(source.content, 'utf8');
+        sources.push({ ...source, contentHash: createHash('sha256').update(source.content).digest('hex') });
+      };
+      for (const channel of channels.slice(0, 5)) {
+        assertDiscordId(channel.id);
+        const cached = client.channels.cache.get(channel.id);
+        if (!cached || !('guildId' in cached) || cached.guildId !== this.guildId || !cached.isSendable()
+          || !client.user || !cached.permissionsFor(client.user)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) { partial = true; continue; }
+        if (typeof channel.topic === 'string') retain({ kind: 'channel_topic', channelId: channel.id, messageId: null, authorId: null, content: channel.topic });
+        try {
+          const messages = await client.rest.get(Routes.channelMessages(channel.id), { signal: combined, query: new URLSearchParams({ limit: '100' }) });
+          invariant(Array.isArray(messages) && messages.length <= 100, 'Invalid rules history');
+          if (messages.length === 100) partial = true;
+          // Prefer pinned guidance within this page. Never crawl arbitrary links or treat member discussion as policy.
+          for (const message of [...messages].sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true) || String(a.id).localeCompare(String(b.id)))) {
+            if (message?.channel_id !== channel.id || message.webhook_id || ![0, 19].includes(message.type) || !message.author) continue;
+            assertDiscordId(message.id); assertDiscordId(message.author.id);
+            if (typeof message.content !== 'string' || !message.content.trim()) { if (message.embeds?.length || message.attachments?.length) partial = true; continue; }
+            const authorId = message.author.id as string;
+            if (!authors.has(authorId)) {
+              if (authors.size >= 12) { partial = true; continue; }
+              let trusted = authorId === guild.owner_id;
+              if (!trusted) {
+                try {
+                  const raw = await client.rest.get(Routes.guildMember(this.guildId, authorId), { signal: combined });
+                  const member = nativeMember(raw, authorId, this.guildId, roles);
+                  trusted = !member.pending && (BigInt(member.permissions) & (PermissionFlagsBits.Administrator | PermissionFlagsBits.ManageGuild)) !== 0n;
+                } catch { partial = true; }
+              }
+              authors.set(authorId, trusted);
+            }
+            if (authors.get(authorId)) retain({ kind: 'message', channelId: channel.id, messageId: message.id, authorId, content: message.content });
+          }
+        } catch { partial = true; }
+      }
+      if (!this.current(this.guildId, epoch, combined)) return unavailable;
+      const result: ServerRulesSnapshot = { ...unavailable, coverage: partial ? 'partial' : 'complete', sources };
+      validateServerRules(result); return result;
+    } catch { return unavailable; }
+  }
 
   /** Fetch current message text and local send permissions; REST cannot reconstruct deleted or pre-edit originals. */
   async readMessage(input: MessageReference, signal: AbortSignal): Promise<DiscordMessageRead> {

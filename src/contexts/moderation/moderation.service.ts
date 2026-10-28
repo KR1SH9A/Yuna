@@ -153,6 +153,10 @@ export class ModerationService {
     if (invalidation.pending || await em.count(EvidenceRevision, { ...this.scope, payloadPurgedAt: null })
       || await em.count(ModerationFinding, { ...this.scope, payloadPurgedAt: null })
       || await em.count(ModerationAction, { ...this.scope, payloadPurgedAt: null })) return { disposition: 'pending', reasonCode: 'moderation_payloads_pending' };
+    const guidance = await em.execute<{ present: boolean }[]>(
+      "select exists(select 1 from moderation_policy_revision where installation_id=? and guild_id=? and jsonb_exists(evaluation_configuration, 'serverRules')) as present",
+      [this.scope.installationId, this.scope.guildId]);
+    if (guidance[0]?.present) return { disposition: 'retained', reasonCode: 'moderation_policy_guidance_retained' };
     return await em.count(ModerationCase, this.scope) || await em.count(ModerationPolicyRevision, this.scope)
       ? { disposition: 'retained', reasonCode: 'moderation_provenance_metadata' } : { disposition: 'complete', reasonCode: null };
   }

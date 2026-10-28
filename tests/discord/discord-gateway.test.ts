@@ -7,6 +7,7 @@ import { jest, test } from '@jest/globals';
 import { Client, Events, MessageFlags, MessageType, Routes, type Message } from 'discord.js';
 import { administrationCommandDefinition, DiscordGateway, type DiscordGatewayOptions } from '../../src/discord/discord.module.js';
 import { hashDiscordContent } from '../../src/discord/input-normalizer.js';
+import { chatContext } from '../helpers/chat-context.js';
 import type { DiscordOriginalMessageCapture, DiscordOriginalMessageProvenance, DiscordReplyRequest, MessageReference, NormalizedAdministrationCommand, NormalizedConversationMessage } from '../../src/discord/contracts.js';
 
 const botId = '100000000000000001';
@@ -18,6 +19,31 @@ const previousId = '100000000000000006';
 const deliveredId = '100000000000000007';
 const foreignGuild = '100000000000000008';
 const secret = 'private-test-token-must-never-be-propagated';
+
+test('plain name calls carry chat context while ordinary messages remain silent and original moderation intake stays independent', async () => {
+  const originals: DiscordOriginalMessageCapture[] = [];
+  const f = await fixture({ onOriginalMessage: (_provenance, capture) => { originals.push(capture); } });
+  const read = jest.spyOn(f.gateway.stateReader, 'readConversationContext').mockResolvedValue(chatContext(reference));
+  const ordinary = message({ content: 'game night Friday', mentions: { users: new Set(), parsedUsers: new Set() } });
+  f.client.emit(Events.Raw, { t: 'MESSAGE_CREATE', d: { ...apiMessage({ content: ordinary.content }), guild_id: reference.guildId, attachments: [] } }, 0);
+  f.client.emit(Events.MessageCreate, ordinary);
+  await setImmediate();
+  assert.equal(f.messages.length, 0); assert.equal(read.mock.calls.length, 0); assert.equal(originals.length, 1);
+  f.client.emit(Events.MessageCreate, message({ content: 'Yuna, what did I miss?', mentions: { users: new Set(), parsedUsers: new Set() } }));
+  await setImmediate();
+  assert.equal(f.messages.length, 1); assert.equal(f.messages[0]?.chatContext?.channelName, 'general');
+  await f.gateway.stop();
+});
+
+test('a context-message edit while history is loading prevents a stale reply admission', async () => {
+  const f = await fixture(), context = deferred<ReturnType<typeof chatContext>>();
+  jest.spyOn(f.gateway.stateReader, 'readConversationContext').mockReturnValue(context.promise);
+  f.client.emit(Events.MessageCreate, message({ content: 'Yuna, help' }));
+  await setImmediate();
+  f.client.emit(Events.MessageDelete, { guildId: reference.guildId, channelId: reference.channelId, id: previousId });
+  context.resolve(chatContext(reference)); await setImmediate();
+  assert.equal(f.messages.length, 0); await f.gateway.stop();
+});
 /** Create a fresh uncanceled signal so one test cannot abort another. */
 const signal = () => new AbortController().signal;
 
@@ -148,6 +174,7 @@ test('original callback precedes conversation filtering and captures unmentioned
     onMessage() { order.push('community'); } });
   try {
     dispatchCreate(client);
+    await setImmediate();
     assert.deepEqual(order, ['original', 'community']);
     const content = '  Unmentioned original <@100000000000000099>\n';
     for (let count = 0; count < 2; count += 1) {
@@ -188,10 +215,12 @@ test('original failures and slow capture never suppress Community or create a ga
     } });
     try {
       dispatchCreate(client);
+      await setImmediate();
       assert.equal(messages.length, 1);
       await setImmediate();
       assert.equal(unavailable.length, 0);
       dispatchCreate(client);
+      await setImmediate();
       assert.equal(messages.length, 2);
     } finally { pending.resolve(); await gateway.stop(); }
   }
@@ -237,7 +266,7 @@ test('command ingress acknowledges ephemerally before invoking plain-data owner 
     client.emit(Events.InteractionCreate, interaction);
     await setImmediate();
     assert.equal(received.length, 1);
-    assert.deepEqual(administrationCommandDefinition.options?.map(item => item.name), ['knowledge', 'memory', 'debate', 'usage', 'limit-clear', 'limit', 'action', 'ban', 'unban', 'kick', 'report', 'status', 'bootstrap', 'configure', 'remove', 'grant', 'revoke', 'pause', 'resume', 'channel-status', 'channel']);
+    assert.deepEqual(administrationCommandDefinition.options?.map(item => item.name), ['knowledge', 'memory', 'debate', 'usage', 'limit-clear', 'limit', 'action', 'ban', 'unban', 'kick', 'report', 'status', 'setup', 'bootstrap', 'configure', 'remove', 'grant', 'revoke', 'pause', 'resume', 'channel-status', 'channel']);
   } finally { await gateway.stop(); }
 });
 
@@ -284,6 +313,7 @@ test('wrong-scope commands are ignored and malformed options receive only a priv
     assert.equal(invalid.acknowledgments.length, 1);
     assert.match(JSON.stringify(invalid.edits), /Invalid Yuna command arguments/);
     client.emit(Events.MessageCreate, message());
+    await setImmediate();
     assert.equal(messages.length, 1);
   } finally { await gateway.stop(); }
 });
@@ -307,6 +337,7 @@ test('acknowledgement failure, callback failure and lost private responses never
     await setImmediate();
     assert.equal(calls, 2);
     client.emit(Events.MessageCreate, message());
+    await setImmediate();
     assert.equal(messages.length, 1);
   } finally { await gateway.stop(); }
 });
@@ -705,6 +736,7 @@ test('reconnect waits for cancellation of work admitted before the connection ga
     cancellation.resolve();
     await setImmediate();
     client.emit(Events.MessageCreate, message());
+    await setImmediate();
     assert.equal(messages.length, 1);
   } finally { cancellation.resolve(); await gateway.stop(); }
 });
@@ -802,6 +834,7 @@ test('failed unavailable writes are retried serially and must succeed before hea
     await setImmediate();
     assert.deepEqual(transitions, ['available', 'unavailable', 'available']);
     client.emit(Events.MessageCreate, message());
+    await setImmediate();
     assert.equal(messages.length, 1);
   } finally { fence.resolve(); await gateway.stop(); jest.useRealTimers(); }
 });
@@ -832,6 +865,7 @@ test('an actual outage retries a failed fence but cannot reopen intake until Dis
     await setImmediate();
     assert.deepEqual(transitions, ['available', 'unavailable', 'available']);
     client.emit(Events.MessageCreate, message());
+    await setImmediate();
     assert.equal(messages.length, 1);
   } finally { await gateway.stop(); jest.useRealTimers(); }
 });
@@ -866,6 +900,7 @@ test('a resume event recovers a rejected availability chain and a failed resume 
     await jest.advanceTimersByTimeAsync(1_000);
     assert.equal(availableCalls, 3);
     client.emit(Events.MessageCreate, message());
+    await setImmediate();
     assert.equal(messages.length, 1);
   } finally { await gateway.stop(); jest.useRealTimers(); }
 });

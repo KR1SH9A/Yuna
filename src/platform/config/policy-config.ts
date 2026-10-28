@@ -1,4 +1,7 @@
 /** Read operator-owned rules, spending limits and retention separately from runtime secrets. */
+import { createAutonomousModerationPolicy } from './autonomous-moderation.js';
+import { validateServerRules } from './server-rules.js';
+import { isDeepStrictEqual } from 'node:util';
 import { open } from 'node:fs/promises';
 import { copyJson, invariant } from '../db/entity-values.js';
 import { assertExactMoney } from '../usage/entities/usage-reservation.entity.js';
@@ -51,6 +54,12 @@ export function validatePolicyConfig(value: unknown): YunaPolicyConfig {
     invariant(Object.keys(config).every(key => ['schemaVersion', 'usage', 'moderation', 'retention', 'features'].includes(key)), 'fields');
     if (config.features !== undefined) invariant(config.features && Object.keys(config.features).length === 2
       && typeof config.features.memory === 'boolean' && typeof config.features.debates === 'boolean', 'features');
+    // Expand a staff-free preset into the same immutable policy shape used by existing owner/worker gates.
+    const selectedMode = (config.moderation as { mode?: unknown } | undefined)?.mode;
+    if (selectedMode !== undefined) {
+      invariant(selectedMode === 'autonomous' && Object.keys(config.moderation).every(key => ['enabled', 'mode'].includes(key)), 'moderation mode');
+      config.moderation = { enabled: config.moderation.enabled, policy: createAutonomousModerationPolicy('env:REPLY_MODEL', 'env:JEV_MODEL') };
+    }
     const { usage, moderation, retention } = config;
     invariant(usage && typeof usage === 'object'
       && Object.keys(usage).every(key => ['dailyAttemptLimit', 'dailyBudget', 'prices', 'userDefaults'].includes(key)), 'usage');
@@ -112,6 +121,10 @@ export function validatePolicyConfig(value: unknown): YunaPolicyConfig {
         && Array.isArray(item.ruleIds) && item.ruleIds.length > 0 && item.ruleIds.every(id => ids.has(id)), 'exclusion');
       const evaluation = policy.evaluationConfiguration;
       invariant(evaluation?.schemaVersion === 1, 'evaluation');
+      invariant(evaluation.decisionMode === undefined || evaluation.decisionMode === 'autonomous-v1', 'decision mode');
+      if (evaluation.serverRules) validateServerRules(evaluation.serverRules);
+      if (evaluation.decisionMode === 'autonomous-v1') invariant(isDeepStrictEqual(policy,
+        createAutonomousModerationPolicy(evaluation.observationModel, evaluation.assessmentModel, evaluation.serverRules)), 'autonomous policy must retain its built-in criteria');
       const thresholds = evaluation.decisionThresholds;
       invariant(!moderation.enabled || thresholds !== undefined, 'enabled moderation thresholds');
       if (thresholds !== undefined) invariant(Object.keys(thresholds).length === 3

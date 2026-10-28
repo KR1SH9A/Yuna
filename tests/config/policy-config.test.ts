@@ -62,8 +62,9 @@ test('the starter is portable across model selections and monetary template requ
   const path = new URL('../../../config/yuna.example.json', import.meta.url).pathname;
   const starter = await loadPolicyConfig(path, { REPLY_MODEL: 'any-compatible-observation-model', JEV_MODEL: 'any-compatible-assessment-model' });
   expect(starter.moderation.policy?.evaluationConfiguration.observationModel).toBe('any-compatible-observation-model');
-  expect(starter.moderation.policy?.rules).toHaveLength(4);
-  expect(starter.moderation.policy?.actionMapping.every(mapping => mapping.action !== 'ban')).toBe(true);
+  expect(starter.moderation.policy?.rules).toHaveLength(2);
+  expect(starter.moderation.policy?.evaluationConfiguration.decisionMode).toBe('autonomous-v1');
+  expect(starter.moderation.policy?.actionMapping.map(mapping => mapping.action)).toEqual(['warning', 'ban']);
   expect(starter.usage.userDefaults?.dailyAttemptLimit).toBe(10);
   await expect(loadPolicyConfig(path, { REPLY_MODEL: 'configured-only' })).rejects.toThrow('Unable to load valid Yuna policy configuration');
   const budgeted = await loadPolicyConfig(new URL('../../../config/yuna.budgeted.example.json', import.meta.url).pathname,

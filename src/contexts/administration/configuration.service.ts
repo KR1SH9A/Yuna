@@ -1,4 +1,5 @@
 /** Authorize operator settings and status while each feature retains its own records and cleanup operations. */
+import { createAutonomousModerationPolicy } from '../../platform/config/autonomous-moderation.js';
 import { LockMode } from '@mikro-orm/core';
 import type { EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import { isDeepStrictEqual } from 'node:util';
@@ -36,6 +37,7 @@ export interface OperatorStatus extends CommunityOperationalStatus {
   paused: boolean;
   safetyRevision: number;
   featureAdmission: FeatureAdmission;
+  moderation?: { mode: 'disabled' | 'configured' | 'autonomous'; serverRuleSources: number; rulesCoverage: 'complete' | 'partial' | 'unavailable' | 'not_imported' };
   grants: { grantId: string; granteeUserId: string; capability: string; authorityRevision: number; rowRevision: number; revoked: boolean; expiresAt: string | null }[];
 }
 export interface ConfigurationResult { policyRevision: number; usagePolicyRevision: number; changed: boolean }
@@ -52,7 +54,16 @@ export class ConfigurationService {
     assertUuid(scope.installationId); assertDiscordId(scope.guildId);
     const config = validatePolicyConfig(value);
     const installation = await this.orm.em.fork().findOne(GuildInstallation, { id: scope.installationId, guildId: scope.guildId });
-    return installation !== null && isDeepStrictEqual(installation.operatorPolicy, config);
+    if (!installation?.operatorPolicy) return false;
+    const current = validatePolicyConfig(installation.operatorPolicy);
+    // /setup explicitly selects the built-in preset over a legacy file's handwritten rules.
+    if (current.moderation.policy?.evaluationConfiguration.decisionMode === 'autonomous-v1' && config.moderation.enabled && config.moderation.policy) {
+      const evaluation = config.moderation.policy.evaluationConfiguration;
+      config.moderation.policy = createAutonomousModerationPolicy(evaluation.observationModel, evaluation.assessmentModel);
+    }
+    // Setup-discovered guidance is retained server state, not a local file mismatch on every restart.
+    for (const candidate of [current, config]) if (candidate.moderation.policy) delete candidate.moderation.policy.evaluationConfiguration.serverRules;
+    return isDeepStrictEqual(current, config);
   }
 
   /** Return only IDs, revisions and aggregate counts after current operator authorization. */
@@ -67,7 +78,11 @@ export class ConfigurationService {
       const safety = await em.findOneOrFail(GuildSafetyState, scope);
       const usage = await em.findOne(UsagePolicy, scope);
       const grants = await em.find(CapabilityGrant, scope, { limit: 50, orderBy: { createdAt: 'desc', id: 'asc' } });
-      return { ...await this.owners.readOperationalStatus(em), installationId: installation.id,
+      const configured = installation.operatorPolicy ? validatePolicyConfig(installation.operatorPolicy).moderation : null;
+      const evaluation = configured?.policy?.evaluationConfiguration;
+      return { moderation: { mode: !configured?.enabled ? 'disabled' : evaluation?.decisionMode === 'autonomous-v1' ? 'autonomous' : 'configured',
+        serverRuleSources: evaluation?.serverRules?.sources.length ?? 0, rulesCoverage: evaluation?.serverRules?.coverage ?? 'not_imported' },
+        ...await this.owners.readOperationalStatus(em), installationId: installation.id,
         installationState: installation.state, cleanupProgress: copyJson(installation.cleanupProgress),
         installationRevision: installation.rowRevision, policyRevision: installation.policyRevision,
         usagePolicyRevision: usage?.policyRevision ?? null, paused: safety.paused, safetyRevision: safety.safetyRevision,
@@ -119,6 +134,8 @@ export class ConfigurationService {
     const caller = Object.freeze({ ...trustedCaller });
     assertNonNegativeInteger(expectedPolicyRevision, 'expectedPolicyRevision');
     const config = validatePolicyConfig(value);
+    const guidance = config.moderation.policy?.evaluationConfiguration.serverRules;
+    invariant(!guidance || guidance.guildId === caller.guildId, 'Rules belong to another guild');
     invariant((!config.moderation.enabled && config.moderation.policy === null) || this.owners.publishModerationPolicy, 'Moderation configuration is not supported by this deployment');
     for (const feature of ['memory', 'debates'] as const) invariant(config.features?.[feature] !== true
       || this.owners.availableFeatures?.includes(feature), `${feature} is not supported by this deployment`);

@@ -1,5 +1,6 @@
 /** Durable owner receipts keep immutable originals separate from disposable current-source markers. */
 import { createHash } from 'node:crypto';
+import type { ChatContext } from '../../ai/contracts/chat-context.js';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import { LockMode } from '@mikro-orm/core';
 import { IntakeEvent } from './entities/intake-event.entity.js';
@@ -150,6 +151,8 @@ export class IntakeService {
   /** Keep original bytes immutable; mark them unusable for current-source work. */
   async invalidate(em: EntityManager, scope: InstallationScope, reference: MessageReference, now: Date): Promise<string | null> {
     const sourceKey = `${reference.channelId}:${reference.messageId}`;
+    const context = await em.findOne(IntakeEvent, { ...scope, sourceKey: `context:${sourceKey}` }, { lockMode: LockMode.PESSIMISTIC_WRITE });
+    if (context) context.sourceValidity = 'unresolved';
     const event = await em.findOne(IntakeEvent, { installationId: scope.installationId, sourceKey, isCurrentSourceMarker: true }, { lockMode: LockMode.PESSIMISTIC_WRITE });
     if (event) { event.sourceValidity = 'unresolved'; return event.id; }
     // A create arriving after an uncached edit/delete must not resurrect obsolete work.
@@ -161,10 +164,47 @@ export class IntakeService {
     return tombstone.id;
   }
 
+  /** Bind current REST context separately from original moderation evidence; tombstones win over late history reads. */
+  async bindChatContext(em: EntityManager, scope: InstallationScope, context: ChatContext, now: Date, retention: IntakeRetention): Promise<{
+    context: ChatContext; bindings: { owner: 'intake'; recordId: string; revision: number; contentHash: string }[];
+  }> {
+    invariant(em.isInTransaction() && context.guildId === scope.guildId, 'Context requires the scoped admission transaction');
+    const messages: ChatContext['messages'][number][] = [], bindings: { owner: 'intake'; recordId: string; revision: number; contentHash: string }[] = [];
+    for (const message of context.messages) {
+      const sourceKey = `${context.channelId}:${message.id}`;
+      const source = await em.findOne(IntakeEvent, { ...scope, sourceKey, isCurrentSourceMarker: true });
+      if (source && source.sourceValidity !== 'present') continue;
+      let event = await em.findOne(IntakeEvent, { ...scope, sourceKey: `context:${sourceKey}` }, { lockMode: LockMode.PESSIMISTIC_WRITE });
+      if (event && (event.sourceValidity !== 'present' || event.contentHash !== message.contentHash || event.authorUserId !== message.authorId
+        || event.payloadPurgedAt || event.purgeAfter <= now)) continue;
+      if (!event) {
+        event = new IntakeEvent({ ...scope, createdAt: now, eventKind: 'message_create', sourceEventKey: `context:${sourceKey}`,
+          sourceKey: `context:${sourceKey}`, ingressSequence: BigInt(now.getTime()), observedAt: now, messageCreatedAt: new Date(message.createdAt),
+          authorKind: message.isYuna ? 'bot' : 'user', authorUserId: message.authorId, contentAccess: 'available', coverage: ['current_context'],
+          snapshot: { schemaVersion: 1, fields: { text: message.content } }, contentHash: message.contentHash, ...retention });
+        event.markCurrent(1, 'present'); em.persist(event);
+      }
+      messages.push(message);
+      bindings.push({ owner: 'intake', recordId: event.id, revision: event.sourceVersion, contentHash: event.contentHash! });
+    }
+    return { context: { ...context, messages }, bindings };
+  }
+
+  /** All copied current-message bindings must remain present at acceptance and dispatch, not just the triggering message. */
+  async validateContextBindings(em: EntityManager, scope: InstallationScope,
+    bindings: readonly { owner: string; recordId: string; revision: number; contentHash: string }[] | null): Promise<boolean> {
+    if (!bindings) return false;
+    for (const binding of bindings.filter(value => value.owner === 'intake')) {
+      const current = await this.current(em, scope, binding.recordId, binding.revision);
+      if (!current || current.hash !== binding.contentHash) return false;
+    }
+    return true;
+  }
+
   /** Row lock serializes worker disclosure, source invalidation and reply dispatch. */
   async current(em: EntityManager, scope: InstallationScope, eventId: string, revision: number): Promise<{ hash: string } | null> {
     const event = await em.findOne(IntakeEvent, { ...scope, id: eventId }, { lockMode: LockMode.PESSIMISTIC_WRITE });
-    return event?.isCurrentSourceMarker && event.sourceValidity === 'present' && event.sourceVersion === revision && event.contentHash !== null && event.payloadPurgedAt === null
+    return event?.isCurrentSourceMarker && event.sourceValidity === 'present' && event.sourceVersion === revision && event.contentHash !== null && event.payloadPurgedAt === null && event.purgeAfter > new Date()
       ? { hash: event.contentHash } : null;
   }
 

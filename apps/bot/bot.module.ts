@@ -21,6 +21,7 @@ import { AuthorityService } from '../../src/contexts/administration/authority.se
 import { SafetyService } from '../../src/contexts/administration/safety.service.js';
 import { ConfigurationService } from '../../src/contexts/administration/configuration.service.js';
 import { RemovalService } from '../../src/contexts/administration/removal.service.js';
+import { prepareServerConfiguration } from './moderation-setup.handlers.js';
 import { handleAdministrationCommand, type AdministrationCommands } from './discord.handlers.js';
 import { loadPolicyConfig } from '../../src/platform/config/policy-config.js';
 import { ModerationService } from '../../src/contexts/moderation/moderation.service.js';
@@ -181,7 +182,11 @@ export function createBotResources(config: BotRuntimeConfig): readonly RuntimeRe
       policyReady = config.policyFile === undefined || await configuration.isConfigurationCurrent(scope, configuredPolicy);
       commands = { scope, authority, safety, configuration, removal, staffModeration, moderation, knowledge, memory, debates,
         debateAssessmentAvailable: discord.jevModel !== undefined, userUsage, policyFile: config.policyFile,
-        /** Open policy-gated intake only after authenticated configuration application succeeds. */
+        /** Discover server guidance outside the later configuration transaction. */
+        prepareConfiguration: (settings, autonomous) => prepareServerConfiguration(settings, { autonomous: autonomous || config.policyFile === undefined,
+          guildId: discord.guildId, observationModel: discord.replyModel, assessmentModel: discord.jevModel,
+          readRules: () => gateway.stateReader.readServerRules(controller.signal) }),
+        /** Open intake only after the exact discovered policy has committed. */
         onConfigurationApplied: () => { policyReady = true; } };
       if (!policyReady) console.warn('bot: policy file awaits authenticated /yuna configure; new conversations are held.');
       const stop = AbortSignal.any([signal, controller.signal]);

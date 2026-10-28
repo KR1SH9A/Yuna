@@ -55,17 +55,17 @@ afterAll(async () => {
   finally { database?.close(); }
 }, 30_000);
 
-test('initial preparation applies nine checksummed migrations and repeat preparation is idempotent', async () => {
-  assert.deepEqual(initial.migrations.map(row => row.status), Array(9).fill('applied'));
+test('initial preparation applies ten checksummed migrations and repeat preparation is idempotent', async () => {
+  assert.deepEqual(initial.migrations.map(row => row.status), Array(10).fill('applied'));
   assert.deepEqual(initial.roles, ['yuna_bot', 'yuna_worker']);
   assert.equal(initial.database, selectedDatabase);
   const repeated = await prepareDatabase(settings());
-  assert.deepEqual(repeated.migrations.map(row => row.status), Array(9).fill('already_applied'));
+  assert.deepEqual(repeated.migrations.map(row => row.status), Array(10).fill('already_applied'));
   assert.ok(Object.isFrozen(repeated) && Object.isFrozen(repeated.migrations));
   const orm = connect(selectedDatabase);
   const rows = await orm.em.fork().execute<{ version: number; checksum: string }[]>(
     'select version,checksum from public.yuna_schema_migrations order by version');
-  assert.deepEqual(rows.map(row => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(rows.map(row => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   assert.ok(rows.every(row => /^[a-f0-9]{64}$/.test(row.checksum)));
   const roles = await inspector.em.fork().execute<{ unsafe: boolean }[]>(`select
     rolsuper or rolcreatedb or rolcreaterole or rolinherit or rolreplication or rolbypassrls or not rolcanlogin as unsafe
@@ -78,7 +78,7 @@ test('initial preparation applies nine checksummed migrations and repeat prepara
 });
 
 test('existing earlier databases upgrade without rewriting migration history or data', async () => {
-  for (const version of [1, 2, 3, 4, 5, 6, 7, 8]) {
+  for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
     const name = `migration_upgrade_v${version}`;
     await inspector.em.fork().execute(`create database ${name}`);
     const orm = connect(name);
@@ -87,7 +87,7 @@ test('existing earlier databases upgrade without rewriting migration history or 
       applied_at timestamptz not null default now());
       create table public.upgrade_probe(value text); insert into public.upgrade_probe values('preserve')`);
     const oldRows: { version: number; name: string; checksum: string }[] = [];
-    for (const [index, migrationName] of ['001-core.sql', 'conversation-worker.sql', '003-conversation-notifications.sql', '004-operating-controls.sql', '005-moderation-worker.sql', '006-user-quotas.sql', '007-knowledge-context.sql', '008-memory.sql'].slice(0, version).entries()) {
+    for (const [index, migrationName] of ['001-core.sql', 'conversation-worker.sql', '003-conversation-notifications.sql', '004-operating-controls.sql', '005-moderation-worker.sql', '006-user-quotas.sql', '007-knowledge-context.sql', '008-memory.sql', '009-debates.sql'].slice(0, version).entries()) {
       const sql = await readFile(new URL(`../../../src/platform/db/migrations/${migrationName}`, import.meta.url), 'utf8');
       const checksum = createHash('sha256').update(sql).digest('hex');
       await orm.em.fork().execute(sql);
@@ -98,7 +98,7 @@ test('existing earlier databases upgrade without rewriting migration history or 
     }
     const upgraded = await prepareDatabase(settings(name));
     assert.deepEqual(upgraded.migrations.map(row => row.status),
-      Array.from({ length: 9 }, (_, index) => index < version ? 'already_applied' : 'applied'));
+      Array.from({ length: 10 }, (_, index) => index < version ? 'already_applied' : 'applied'));
     const history = await orm.em.fork().execute<{ version: number; name: string; checksum: string }[]>(
       'select version,name,checksum from public.yuna_schema_migrations order by version');
     assert.deepEqual(history.slice(0, version), oldRows);
@@ -225,7 +225,7 @@ test('concurrent preparation serializes migration application instead of duplica
   assert.deepEqual(results.map(result => result.migrations[0]!.status).sort(), ['already_applied', 'applied']);
   const orm = connect('migration_concurrent');
   const rows = await orm.em.fork().execute<{ count: number }[]>('select count(*)::integer as count from public.yuna_schema_migrations');
-  assert.equal(rows[0]?.count, 9);
+  assert.equal(rows[0]?.count, 10);
 }, 20_000);
 
 test('PUBLIC privileges on unrelated data cause refusal without changing that data or its grants', async () => {
