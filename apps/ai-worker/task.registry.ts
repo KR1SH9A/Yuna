@@ -1,29 +1,42 @@
-/**
- * Planned component: Task registration lookup
- * Kind: Static composition data and lookup function
- * Owner: AI worker application
- * Status: Navigation/design reference; runtime ownership is described below.
- *
- * Current implementation: The active, explicit routes live in ai-worker.module.ts and its conversation, moderation and Debate handlers. A second generic registry is unnecessary.
- * The remaining planned catalog is not an additional required implementation.
- *
- * Responsibility:
- * Map supported stored task kinds and schema versions to known handlers.
- *
- * Planned functions:
- * - resolveHandler: Receive trusted task kind/version metadata and return the registered handler
- *   or an explicit unsupported-version outcome.
- *
- * Planned entries:
- * Observation, structured assessment, reply generation and enabled staged fact/embedding work.
- * No explanation route is admitted until an owner defines its requester and acceptor.
- * Capability schemas remain separate; no universal payload with optional fields.
- *
- * Boundaries:
- * Static application composition, not runtime plugin discovery or arbitrary dispatch. Unknown
- * versions must never be guessed, interpreted as source code, or silently upgraded.
- * Local incompatibility is distinct from missing fleet support; only the latter justifies
- * deliberately parking compatible persisted work at the deployment/admission boundary.
- * This file does not require an injectable service class. The worker composition root constructs
- * the known handler mapping; the lookup is not a DI provider or a new workflow layer.
- */
+/** Static versioned worker routes and fair scanning; only restricted stores can claim durable work. */
+import type { AiTaskHandlers } from './task.handlers.js';
+import type { ModerationTaskHandlers } from './moderation-task.handlers.js';
+import type { DebateTaskHandlers } from './debate-task.handlers.js';
+
+export interface WorkerRoute {
+  readonly kind: 'community.generate' | 'moderation.observe' | 'moderation.assess' | 'debates.assess';
+  readonly schemaVersion: 1;
+  readonly runOne: (signal: AbortSignal) => Promise<boolean>;
+}
+
+/** One registry per concurrency lane; unknown versions never select a handler or silently upgrade. */
+export class TaskRegistry {
+  private readonly routes: readonly WorkerRoute[];
+  private nextRoute = 0;
+
+  /** Register only locally enabled implementations; no queue input or provider response can add routes. */
+  constructor(conversation: Pick<AiTaskHandlers, 'runOne'>, moderation: Pick<ModerationTaskHandlers, 'runOne'> | null,
+    debate: Pick<DebateTaskHandlers, 'runOne'> | null) {
+    this.routes = Object.freeze([
+      { kind: 'community.generate' as const, schemaVersion: 1 as const, runOne: (signal: AbortSignal) => conversation.runOne(signal) },
+      ...(moderation ? (['moderation.observe', 'moderation.assess'] as const).map(kind => ({ kind, schemaVersion: 1 as const,
+        runOne: (signal: AbortSignal) => moderation.runOne(signal, kind) })) : []),
+      ...(debate ? [{ kind: 'debates.assess' as const, schemaVersion: 1 as const, runOne: (signal: AbortSignal) => debate.runOne(signal) }] : []),
+    ].map(route => Object.freeze(route)));
+  }
+
+  /** Resolve exact trusted kind/version metadata; an absent match is explicit local incompatibility. */
+  resolveHandler(kind: string, schemaVersion: number): WorkerRoute | null {
+    return this.routes.find(route => route.kind === kind && route.schemaVersion === schemaVersion) ?? null;
+  }
+
+  /** Rotate even across empty queues and failures so one hot route cannot starve the other owners. */
+  async runOne(signal: AbortSignal): Promise<boolean> {
+    for (let scanned = 0; scanned < this.routes.length && !signal.aborted; scanned++) {
+      const route = this.routes[this.nextRoute]!;
+      this.nextRoute = (this.nextRoute + 1) % this.routes.length;
+      if (await this.resolveHandler(route.kind, route.schemaVersion)!.runOne(signal)) return true;
+    }
+    return false;
+  }
+}

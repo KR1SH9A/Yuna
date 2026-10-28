@@ -229,3 +229,19 @@ test('elapsed deadlines prevent sending and retention erases every conversation 
       join reply_delivery d on d.request_id=c.id where c.installation_id=?`, [f.scope.installationId]);
   assert.deepEqual(rows[0], { snapshot: null, input: null, result: null, content: null, context: null, pending_owner_discard: false });
 });
+
+test('delivery revalidates persisted audience, destination and mentions before claiming an external send', async () => {
+  for (const [column, value] of [
+    ['audience_binding', JSON.stringify({ schemaVersion: 1, visibility: 'channel', channelId: '940000000000000001', requesterUserId: '940000000000000009', revision: 1 })],
+    ['reply_message_id', '940000000000000009'],
+    ['allowed_mentions', JSON.stringify({ users: ['940000000000000009'], roles: [], everyone: false, repliedUser: false })],
+  ] as const) {
+    const f = await scenario();
+    assert.equal(await f.conversation.receiveInput(f.message), 'admitted');
+    await finishNext(f.model); assert.equal(await f.conversation.acceptReplyResults(), 1);
+    // Deliberately inject a validly shaped but differently bound stored value, as from an incompatible writer.
+    await botOrm.em.fork().execute(`update reply_delivery set ${column}=? where installation_id=?`, [value, f.scope.installationId]);
+    await f.delivery.dispatchReadyDeliveries(new AbortController().signal);
+    assert.equal(f.sent.length, 0); assert.equal(await deliveryState(f.scope.installationId), 'CANCELED');
+  }
+});

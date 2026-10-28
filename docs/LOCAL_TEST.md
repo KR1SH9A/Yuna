@@ -1,6 +1,6 @@
 # Run Yuna locally
 
-Yuna runs in one configured Discord server with a bot process, a restricted AI worker and PostgreSQL. The implemented features are direct conversation, approved server knowledge, original-message moderation, owner administration, personal usage limits, private explicit memory and consented Debate scoring. Configuration enables features; individual Memory and Debate consent is still required. Optional governance, kick, inferred memory and semantic indexing remain outside the shipped route.
+Yuna runs in one configured Discord server with a bot process, a restricted AI worker and PostgreSQL. The implemented features are direct conversation, approved server knowledge, original-message moderation, owner administration, personal usage limits, private explicit memory and consented Debate scoring. Configuration enables features; individual Memory and Debate consent is still required. Optional governance, inferred memory and semantic indexing remain outside the shipped route.
 
 ## 1. Prepare Node and PostgreSQL
 
@@ -19,7 +19,7 @@ In the [Discord Developer Portal](https://discord.com/developers/applications):
 1. Create the application and bot. Obtain the bot token and enable **Message Content Intent** for original-text capture and ordinary conversation triggers.
 2. Configure Guild Install with `bot` and `applications.commands`. Copy the application ID and invite it to your chosen server. Slash commands are registered explicitly in step 4. [Discord command setup](https://docs.discord.com/developers/interactions/application-commands).
 3. Grant **View Channels**, **Send Messages** and **Read Message History** in the channels you will test. Conversation replies in threads also require **Send Messages in Threads** and actual thread access. Debate result publication currently supports ordinary text and announcement channels, not threads or voice channels.
-4. For ban/unban tests, grant **Ban Members** and place Yuna's highest role above eligible target roles. **View Audit Log** enables exact audit reconciliation after uncertain ban/unban responses. Channel overrides and target hierarchy still apply. Yuna does not require Administrator for itself. [Discord permissions](https://docs.discord.com/developers/topics/permissions).
+4. For ban/unban tests, grant **Ban Members**; for kick tests, grant **Kick Members**, and place Yuna's highest role above eligible target roles. **View Audit Log** enables exact audit reconciliation after uncertain ban/unban/kick responses. Channel overrides and target hierarchy still apply. Yuna does not require Administrator for itself. [Discord permissions](https://docs.discord.com/developers/topics/permissions).
 5. Enable Developer Mode in your Discord client and copy the server ID.
 
 A public web server or tunnel is unnecessary: this deployment receives interactions over the Discord Gateway. Owner/control operations require both Yuna's application grant and fresh native Discord authority. An administrator who has not been granted a Yuna capability does not acquire it merely by seeing a command.
@@ -87,6 +87,8 @@ Wait for both processes to report ready. As the **current server owner**, run `/
 Check a free reply using Discord's actual mention picker: **@Yuna hello**. Reply to Yuna's message with its ping toggle off to test reply detection. Ordinary messages do not trigger Community replies; original-message moderation is independently admitted when enabled. Commands respond ephemerally. Bot/webhook/system identities never become inferred human sanction targets.
 
 Keep both terminals and the Mac running. Ctrl+C stops each process. After code changes, stop them, run `npm run db:prepare` and `npm run register:commands` when applicable, then restart. Only one bot may own the configured guild. A second bot is rejected, and loss of the first bot's database ownership connection causes shutdown instead of allowing two dispatchers.
+
+For a staff kick, register the updated commands, grant the caller `moderation.kick` for the exact target/channel scope, and use `/yuna kick target:<member ID> reason:<reason>`. Both caller and bot still need native Kick Members permission and sufficient role hierarchy; the command records intent and `/yuna action` reports the observed result. This does not enable automatic kicks.
 
 ## 6. Exercise the implemented commands
 

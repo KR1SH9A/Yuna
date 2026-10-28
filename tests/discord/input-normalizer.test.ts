@@ -143,6 +143,8 @@ test('staff sanctions retain exact targets, default deletion to zero and reject 
   /** Build the normalized Discord option tree used to test command validation. */
   const command = (name: string, entries: NonNullable<AdministrationCommandSnapshot['options'][number]['options']> = options) => normalizeAdministrationCommand({ ...commandSource, options: [{ name, type: 1, options: entries }] });
   assert.deepEqual(command('ban')?.arguments, { targetUserId: botId, reason: 'An explicit staff reason', deleteMessageSeconds: 0 });
+  assert.deepEqual(command('kick')?.arguments, { targetUserId: botId, reason: 'An explicit staff reason' });
+  assert.equal(command('kick', [...options, { name: 'delete-seconds', type: 4, value: 1 }]), null);
   assert.deepEqual(command('unban')?.arguments, { targetUserId: botId, reason: 'An explicit staff reason' });
   assert.equal(command('unban', [...options, { name: 'delete-seconds', type: 4, value: 1 }]), null);
   assert.equal(command('ban', [...options, { name: 'actorId', type: 3, value: botId }]), null);

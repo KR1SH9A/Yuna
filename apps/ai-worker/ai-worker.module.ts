@@ -1,4 +1,5 @@
 /** Start bounded worker lanes; each lane fairly shares conversation and moderation jobs without multiplying concurrency. */
+import { TaskRegistry } from './task.registry.js';
 import { randomUUID } from 'node:crypto';
 import type { WorkerRuntimeConfig } from '../../src/platform/config/runtime-config.js';
 import { createDatabaseResource } from '../../src/platform/db/db.module.js';
@@ -48,20 +49,10 @@ export function createWorkerResources(config: WorkerRuntimeConfig): readonly Run
           config.jev.mode === 'live' ? config.jev.model : 'fake', config.requestTimeoutMs, latency) : null;
         const debate = jev ? new DebateTaskHandlers(new DebateWorkerStore(orm), jev, randomUUID(),
           config.jev.mode === 'live' ? config.jev.model : 'fake', config.requestTimeoutMs) : null;
-        let nextRoute = 0;
+        const registry = new TaskRegistry(handler, moderation, debate);
         // Each lane still claims through restricted SQL; notifications never authorize a task.
         return runBackgroundLoop({ signal: stop, wakeup, intervalMs: 5_000,
-          run: async () => {
-            // Rotate the first scan so a busy conversation queue cannot starve moderation or vice versa.
-            const routes = moderation ? 4 : 1;
-            for (let scanned = 0; scanned < routes && !stop.aborted; scanned++) {
-              const route = nextRoute; nextRoute = (nextRoute + 1) % routes;
-              if (route === 0 ? await handler.runOne(stop)
-                : route === 3 ? await debate!.runOne(stop)
-                  : await moderation!.runOne(stop, route === 1 ? 'moderation.observe' : 'moderation.assess')) return true;
-            }
-            return false;
-          },
+          run: () => registry.runOne(stop),
           onError: () => console.warn('ai-worker: task storage unavailable; awaiting recovery.'),
         });
       });

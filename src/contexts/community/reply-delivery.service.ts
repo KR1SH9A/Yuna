@@ -1,4 +1,5 @@
 /** Deliver accepted replies once, then reconcile uncertain outcomes on a separate maintenance path. */
+import { ReplyPolicy } from './reply.policy.js';
 import { createHash } from 'node:crypto';
 import { LockMode } from '@mikro-orm/core';
 import type { MikroORM } from '@mikro-orm/postgresql';
@@ -86,7 +87,9 @@ export class ReplyDeliveryService {
         const knowledgeCurrent = !request?.contextBindings?.some(binding => binding.owner === 'knowledge')
           || Boolean(this.knowledge && await this.knowledge.validateBindings(em, request.contextBindings, request.audienceBinding, now));
         if (!admission || !resultCurrent || !request || request.acceptedResultReference !== row.acceptedResultReference
-          || !knowledgeCurrent || request.canceledAt || request.stage !== 'accepted' || !source || !remote.exists || !remote.canSend || source.hash !== remote.sourceHash || !row.acceptedContent || settings?.mode !== 'direct' || settings.rowRevision !== request.settingsRevision) {
+          || !ReplyPolicy.validateAudience(row.audienceBinding, row.channelId!, request.audienceBinding)
+          || row.channelId !== request.sourceChannelId || row.replyMessageId !== request.sourceMessageId
+          || !knowledgeCurrent || request.canceledAt || request.stage !== 'accepted' || !source || !remote.exists || !remote.canSend || source.hash !== remote.sourceHash || !ReplyPolicy.validateReply(row.acceptedContent, row.allowedMentions) || settings?.mode !== 'direct' || settings.rowRevision !== request.settingsRevision) {
           row.cancelBeforeDispatch('source_or_permission_changed', row.rowRevision, now);
           return null;
         }

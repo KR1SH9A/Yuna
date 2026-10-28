@@ -14,7 +14,8 @@ import { invariant } from '../../src/platform/db/entity-values.js';
 import { IntakeService } from '../../src/platform/intake/intake.service.js';
 import { TaskService } from '../../src/platform/jobs/task.service.js';
 import { createTaskWakeup } from '../../src/platform/jobs/task-wakeup.js';
-import { runBackgroundLoop } from '../../src/platform/runtime/background-loop.js';
+import { startCompletionHandlers } from './completion.handlers.js';
+import { startRecoveryHandlers } from './recovery.handlers.js';
 import { createLatencyLogger } from '../../src/platform/runtime/latency.js';
 import { AuthorityService } from '../../src/contexts/administration/authority.service.js';
 import { SafetyService } from '../../src/contexts/administration/safety.service.js';
@@ -188,68 +189,9 @@ export function createBotResources(config: BotRuntimeConfig): readonly RuntimeRe
       // Fresh replies have their own serial loop. Slow reconciliation and cleanup do not
       // occupy that loop; all mutations still use the existing scoped transaction locks.
       running = [
-        runBackgroundLoop({ signal: stop, wakeup, intervalMs: 5_000,
-          /** Accept exact frozen Debate completions independently of Discord publication latency. */
-          async run() { await debates.runMaintenance(); },
-          /** Keep diagnostics bounded while durable Debate owner recovery remains available. */
-          onError: () => console.warn('bot: Debate assessment deferred after a storage failure.'),
-        }),
-        runBackgroundLoop({ signal: stop, intervalMs: 5_000,
-          /** Publish accepted Debate summaries once and reconcile uncertain sends without resending them. */
-          async run() { await debatePublication.runMaintenance(stop); },
-          /** Avoid exposing participant text or transport errors through operational logs. */
-          onError: () => console.warn('bot: Debate publication deferred after a storage/transport failure.'),
-        }),
-        runBackgroundLoop({ signal: stop, wakeup, intervalMs: 5_000,
-          /** Advance admitted moderation assessment and recover stalled owner work. */
-          async run() { await moderationWorkflow!.runMaintenance(); },
-          /** Report a bounded background failure while allowing the durable recovery loop to retry. */
-          onError: () => console.warn('bot: moderation assessment deferred after a storage failure.'),
-        }),
-        runBackgroundLoop({ signal: stop, intervalMs: 5_000,
-          /** Dispatch eligible moderation actions once and reconcile uncertain effects. */
-          async run() { await actionExecution!.recoverDueActions(stop); },
-          /** Report a bounded background failure while allowing the durable recovery loop to retry. */
-          onError: () => console.warn('bot: moderation execution deferred after a storage/transport failure.'),
-        }),
-        runBackgroundLoop({ signal: stop, wakeup, intervalMs: 5_000,
-          /** Accept completed replies and dispatch ready intents without waiting for slow reconciliation. */
-          async run() {
-            const accepted = await conversation!.acceptReplyResults();
-            await delivery!.dispatchReadyDeliveries(stop);
-            return accepted > 0;
-          },
-          /** Report a bounded background failure while allowing the durable recovery loop to retry. */
-          onError: () => console.warn('bot: reply processing deferred after a storage/transport failure.'),
-        }),
-        runBackgroundLoop({ signal: stop, intervalMs: 5_000,
-          /** Recover expired task leases through the restricted durable task lifecycle. */
-          async run() { await tasks.recoverExpired(orm.em.fork(), 50); },
-          /** Report a bounded background failure while allowing the durable recovery loop to retry. */
-          onError: () => console.warn('bot: task recovery deferred after a storage failure.'),
-        }),
-        runBackgroundLoop({ signal: stop, intervalMs: 15_000,
-          /** Reconcile uncertain replies separately so slow lookups cannot delay new ready deliveries. */
-          run: () => delivery!.reconcileDueDeliveries(stop),
-          /** Report a bounded background failure while allowing the durable recovery loop to retry. */
-          onError: () => console.warn('bot: reconciliation deferred after a storage/transport failure.'),
-        }),
-        runBackgroundLoop({ signal: stop, intervalMs: 60_000,
-          /** Run owner retention and installation cleanup after short-lived work has been fenced. */
-          async run() {
-            await conversation!.runRetention();
-            await memory.runRetention();
-            await orm.em.fork().transactional(async em => {
-              await administration!.lockPrivacy(em, scope!);
-              await moderation!.runRetention(em, new Date());
-              await debates.runRetention(em, new Date());
-              await audit.purgeExpired(em, scope!);
-            });
-            await removal!.runCleanup();
-          },
-          /** Report a bounded background failure while allowing the durable recovery loop to retry. */
-          onError: () => console.warn('bot: retention deferred after a storage failure.'),
-        }),
+        ...startCompletionHandlers({ signal: stop, wakeup, conversation, delivery, moderationWorkflow, debates }),
+        ...startRecoveryHandlers({ signal: stop, orm, scope, administration, removal, tasks, conversation, delivery,
+          memory, moderation, actionExecution, debates, debatePublication, audit }),
       ];
     },
     /** Close ingress, cancel background loops and drain callbacks before recording the installation unavailable. */

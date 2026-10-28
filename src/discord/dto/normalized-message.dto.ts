@@ -1,44 +1,40 @@
-/**
- * Planned component: NormalizedDiscordMessageDto
- * Kind: Normalized event DTO
- * Owner: Discord boundary
- * Status: Navigation/design reference; runtime ownership is described below.
- *
- * Current implementation: Current normalization is implemented by input-normalizer.ts and contracts.ts. This wider DTO catalog is an extension reference.
- * The remaining planned catalog is not an additional required implementation.
- *
- * Responsibility:
- * Carry a bounded message snapshot from DiscordInputNormalizer to bot intake without SDK objects.
- *
- * Planned fields:
- * Trusted source metadata: SourceProvenance from ../contracts.ts; known eventKind; messageType.
- * Untrusted content: bounded message text and attachment metadata/references.
- * Coverage: contentAccess (available/restricted/unknown), explicitly unavailable fields and
- * attachment capture markers. Attachment metadata includes attachment ID, parent message locator,
- * filename/type/size and temporary signed URL when present; durable capture is a separate fact.
- * Delete events contain message/channel IDs and optional guild ID, not original content/author.
- * Bulk deletes preserve transport identity and normalize one source deletion per message ID.
- *
- * Producer and consumers:
- * normalizeMessage / normalizeMessageRevision -> DiscordHandlers -> durable intake. Bot routing
- * maps the retained snapshot into the owning feature's DTO and separately supplies trusted source
- * values. This transport shape is not a shared business entity or a context-owned request schema.
- *
- * Validation:
- * Check external IDs as decimal strings, known event kinds, timestamp/provenance shape and
- * content/attachment limits. Validate current create/update message payloads; do not assume every
- * update is partial or that SDK cached old state exists. Preserve absent optional data and
- * restricted content rather than converting it into an empty authored message. Validate on receipt
- * and when reading a retained serialized snapshot under its schema version.
- *
- * Planned methods:
- * None. Fields and boundary validation only; no business decisions, queries or networking.
- *
- * Invariants:
- * Source identity comes from verified transport metadata, never message text. Only an authentic
- * MESSAGE_CREATE capture establishes the original body for original-only moderation. Later
- * update/current REST snapshots remain current observations, even when editedAt is null.
- * Missing referenced_message means unknown; explicit null means the referenced message was deleted.
- * Raw attachment URLs expire and do not prove durable capture. Installation identity and permission
- * checks remain with their owners. DTOs do not contain persistent Discord SDK user/member graphs.
- */
+/** Plain message identities, current conversation input and original-event provenance across Discord ingress. */
+export interface MessageReference {
+  readonly guildId: string;
+  readonly channelId: string;
+  readonly messageId: string;
+}
+
+export interface NormalizedConversationMessage extends MessageReference {
+  readonly authorId: string;
+  readonly text: string;
+  readonly previousReply?: string;
+  readonly createdAt: Date;
+  /** Hash of the full observed source, before removing mentions or trimming input. */
+  readonly sourceHash: string;
+}
+
+/** Authenticated create-event facts; webhook/system identities never become inferred human targets. */
+export interface DiscordOriginalMessageProvenance extends MessageReference {
+  readonly eventKind: 'message_create';
+  readonly authorKind: 'user' | 'bot' | 'webhook' | 'system' | 'unknown';
+  readonly authorUserId: string | null;
+  readonly webhookId: string | null;
+  readonly messageType: number;
+  readonly createdAt: Date | null;
+  readonly observedAt: Date;
+  readonly shardId?: number;
+  readonly gatewaySequence?: number;
+}
+
+/** Exact body and attachment metadata from one original dispatch, with explicit access/coverage gaps. */
+export interface DiscordOriginalMessageCapture {
+  readonly originalContent: string | null;
+  readonly attachments: readonly {
+    readonly id: string; readonly filename: string; readonly contentType: string | null;
+    readonly byteSize: number; readonly description: string | null;
+  }[];
+  readonly contentAccess: 'available' | 'restricted' | 'missing';
+  readonly attachmentsComplete: boolean;
+  readonly missingReasons: readonly string[];
+}

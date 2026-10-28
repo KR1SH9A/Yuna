@@ -1,16 +1,26 @@
 # Yuna implementation guide
 
-Updated 28 October 2026. This is the function, data-flow and implementation guide requested in [considerations.txt](considerations.txt). Read [local setup](docs/LOCAL_TEST.md), [configuration](config/README.md) and [operations](docs/OPERATIONS.md) for running an installation.
+Updated 29 October 2026. This is the function, data-flow and implementation guide requested in [considerations.txt](considerations.txt). Read [local setup](docs/LOCAL_TEST.md), [configuration](config/README.md) and [operations](docs/OPERATIONS.md) for running an installation.
 
 ## Scope and current state
 
-The selected implementation now includes conversations, approved server knowledge, text moderation, staff ban/unban controls, member quotas and spending preferences, explicit private memory, and consented structured debates. Administration owns authority, configuration, safety and removal. PostgreSQL owns durable claims and accounting; separate bot and worker processes own Discord and provider I/O respectively.
+The selected implementation now includes conversations, approved server knowledge, text moderation, staff ban/unban/kick controls, member quotas and spending preferences, explicit private memory, and consented structured debates. Administration owns authority, configuration, safety and removal. PostgreSQL owns durable claims and accounting; separate bot and worker processes own Discord and provider I/O respectively.
 
 The user authorized completing the remaining implementation, adding missing behavior where existing functions could not provide it, supplying editable defaults, and documenting files and methods. Existing notification and latency changes were preserved. No commit or push is part of this work.
 
 There are 40 entity mappings: 36 enabled and four staged. Nine versioned migrations deploy the enabled schema and restricted worker functions. The personal usage preference table is SQL-owned rather than an ORM entity. Staged mappings are ActionPlan, PlanApproval, CustodianEnrollment and FactEmbedding. Their presence does not enable governance or semantic search.
 
 This is ordinary TypeScript composition with MikroORM transactions and PostgreSQL notifications plus fallback scans. It does not require a web server, Redis or a second queue system. One bot owns one configured guild; workers share a bounded concurrency limit across enabled task routes. Provider policy is model-selectable, while the current adapters implement DeepSeek chat and OpenRouter Decisions protocols.
+
+## Remaining scaffold completion, 29 October
+
+The [implementation audit](docs/IMPLEMENTATION_AUDIT.md) accounts for all 31 formerly comment-only TypeScript files: eleven now contain consumed code/contracts; twenty unused designs were retired in favor of their existing owners. `check:docs` rejects empty production files, including empty export placeholders. This resolves the misleading source scaffolds; it does not claim every proposed product feature is released.
+
+`DiscordStateReader.readExecutionFacts` now owns native permission and hierarchy reads, including internal request correlation IDs that are not Discord snowflakes. `readMessage` distinguishes current text, restricted content, missing messages and unavailable reads. `readBan` distinguishes present, absent and unavailable ban state without claiming who created a ban. `readRelevantAuditEntries` bounds reconciliation to exact executor/target/operation/reason/time evidence. Reads spanning a Gateway outage are rejected. Gateway and moderation transport share this reader; no external I/O enters a transaction.
+
+`ReplyPolicy.shouldConsiderReply`, `validateAudience` and `validateReply` are called by admission, acceptance and dispatch. They reject invalid dates, obsolete or mismatched audiences/destinations, unbounded output and enabled mentions in generated replies. Knowledge validity still belongs to KnowledgeService. Public Community and Discord DTOs now contain the actual definitions consumed by their owners rather than speculative field catalogs.
+
+`TaskRegistry.resolveHandler` recognizes only exact supported kind/version pairs. Each worker lane uses its fair `runOne` scan without increasing concurrency. Bot completion and recovery handlers own loop composition while business services retain claims, acceptance, reconciliation and cleanup. `/yuna kick` is connected to normalization and StaffModerationService; command registration remains an operator action.
 
 ## Plan disposition
 
@@ -32,7 +42,7 @@ These are review units from the original remaining-work plan, now grouped by del
 | D1–D3 | Exact-scope participant consent, explicit submissions, frozen transcript/rubric, typed Jev evaluation, deterministic totals, optional paired scoring, publication and cleanup. |
 | P5 and deployment acceptance | Still requires an operator's live Discord/provider session, real response-quality evaluation and deployment-specific timings. No credentials were used or external command registration, migration or deployment performed here. |
 
-The optional kick, governance, artifact-storage and embedding component methods are now implemented as described below. Their remaining command/deployment/workflow integration is separate. Autonomous participation, semantic retrieval, inferred memory, media-content moderation, coordinated spam/raid detection and multiple active bot owners remain outside the released feature scope.
+The optional kick, governance, artifact-storage and embedding component methods are now implemented as described below. Kick command integration is complete; the other components still need deployment/workflow integration as recorded in the audit. Autonomous participation, semantic retrieval, inferred memory, media-content moderation, coordinated spam/raid detection and multiple active bot owners remain outside the released feature scope.
 
 ## Optional component methods completed on 28 October
 
@@ -178,7 +188,7 @@ Health reports current installation/safety/availability and the live ownership l
 
 ## Verification and remaining acceptance
 
-On 28 October 2026, `npm run test:all` passed all 60 suites and 589 tests after the optional component methods were added. The TypeScript build, `npm run check:docs` and `git diff --check` also passed. This includes real isolated PostgreSQL governance, kick and artifact integration tests alongside the existing feature suites. Run `npm run test:coverage` when a fresh coverage report is needed; no new coverage percentage is claimed for this change. PostgreSQL integration tests must run serially and need local server binaries and permission to create and clean up temporary shared memory. The test helper uses isolated disposable databases; it does not migrate the user's running database.
+On 29 October 2026, `npm run test:all` passed all 63 suites and 605 tests after completing the scaffold audit and integration changes. `npm test` separately passed 390 tests in 41 suites. The TypeScript build, `npm run check:docs` and `git diff --check` also passed. This includes real isolated PostgreSQL governance, kick and artifact integration tests alongside the existing feature suites. Run `npm run test:coverage` when a fresh coverage report is needed; no new coverage percentage is claimed for this change. PostgreSQL integration tests must run serially and need local server binaries and permission to create and clean up temporary shared memory. The test helper uses isolated disposable databases; it does not migrate the user's running database.
 
 The suite covers exact role grants and nine-step upgrades, real-lock concurrency, rollback, source/policy/safety invalidation, unknown effects/costs, consent/withdrawal/deletion, quotas and currency changes, subprocess lifecycle, private transport attachments, and dependency boundaries. The operations suite performs a real isolated dump/restore and a bounded thirty-input fake load with twenty admitted tasks, four worker lanes and twenty unique replies. Those finite measurements do not establish production capacity.
 

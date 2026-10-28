@@ -237,7 +237,7 @@ test('command ingress acknowledges ephemerally before invoking plain-data owner 
     client.emit(Events.InteractionCreate, interaction);
     await setImmediate();
     assert.equal(received.length, 1);
-    assert.deepEqual(administrationCommandDefinition.options?.map(item => item.name), ['knowledge', 'memory', 'debate', 'usage', 'limit-clear', 'limit', 'action', 'ban', 'unban', 'report', 'status', 'bootstrap', 'configure', 'remove', 'grant', 'revoke', 'pause', 'resume', 'channel-status', 'channel']);
+    assert.deepEqual(administrationCommandDefinition.options?.map(item => item.name), ['knowledge', 'memory', 'debate', 'usage', 'limit-clear', 'limit', 'action', 'ban', 'unban', 'kick', 'report', 'status', 'bootstrap', 'configure', 'remove', 'grant', 'revoke', 'pause', 'resume', 'channel-status', 'channel']);
   } finally { await gateway.stop(); }
 });
 
@@ -989,4 +989,16 @@ test('startup cancellation/failure never retain token-bearing SDK errors', async
   await assert.rejects(starting, /Discord startup/);
   await interrupted.stop();
   assert.equal(blocked.destroyed, 1);
+});
+
+test('native reads accept bounded internal correlation IDs while command ingress remains snowflake-only', async () => {
+  const { client, gateway } = await fixture(); nativeRoutes(client);
+  try {
+    const caller = { ...authorityCaller, sourceRequestId: 'candidate-current:stored-plan-id' };
+    const facts = await gateway.readFacts(caller, { capability: 'administration.manage' });
+    assert.equal(facts.complete, true); assert.equal(facts.sourceRequestId, caller.sourceRequestId);
+    for (const sourceRequestId of ['', 'x'.repeat(201)]) {
+      assert.equal((await gateway.readFacts({ ...caller, sourceRequestId }, { capability: 'administration.manage' })).complete, false);
+    }
+  } finally { await gateway.stop(); }
 });

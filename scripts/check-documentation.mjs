@@ -15,6 +15,11 @@ const gaps = [];
 for (const file of ['src', 'apps', 'tests'].flatMap(directory => sourceFiles(resolve(root, directory)))) {
   const text = readFileSync(file, 'utf8'), name = relative(root, file);
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  if ((name.startsWith('src/') || name.startsWith('apps/')) && !source.statements.some(node =>
+    !ts.isEmptyStatement(node) && !(ts.isExportDeclaration(node) && !node.moduleSpecifier && node.exportClause
+      && ts.isNamedExports(node.exportClause) && node.exportClause.elements.length === 0))) {
+    gaps.push(`${name}:1 production file has no implementation or contract; move design-only notes to documentation`);
+  }
   if (!/^\s*(\/\*|\/\/)/u.test(text)) gaps.push(`${name}:1 file purpose comment is missing`);
   /** Check named methods/functions, including lifecycle callbacks; ordinary anonymous callback expressions need no repeated labels. */
   function visit(node) {

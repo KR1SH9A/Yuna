@@ -5,9 +5,8 @@ import { ScopedEntity } from '../../../platform/db/base.entity.js';
 import { assertDate, assertDiscordId, assertNonNegativeInteger, assertUuid, copyJson, invariant, type ScopedEntityInput } from '../../../platform/db/entity-values.js';
 import { nextRevision, validateAudience, validateContinuation, validateMentions, type AllowedMentions, type AudienceBinding, type ContextBinding, type InteractionContinuation } from './community-values.js';
 
-export type ReplyDestination =
-  | { transport: 'channel_message'; channelId: string; replyMessageId: string | null; nonce: string; enforceNonce: boolean }
-  | { transport: 'interaction_original'; continuation: InteractionContinuation };
+import type { ReplyDestination } from '../contracts.js';
+export type { ReplyDestination } from '../contracts.js';
 export interface ReplyDeliveryInput extends ScopedEntityInput {
   requestId: string;
   acceptedResultReference: string;
@@ -22,30 +21,8 @@ export interface ReplyDeliveryInput extends ScopedEntityInput {
   purgeAfter: Date;
   maxAttempts: number;
 }
-export type ReplyDeliveryState = 'READY' | 'DISPATCHED' | 'UNKNOWN' | 'DELIVERED' | 'FAILED' | 'CANCELED' | 'EXPIRED';
-export interface ReplyAttemptMetadata {
-  generation: number;
-  executorId: string;
-  claimedAt: string;
-  sentAt: string | null;
-  respondedAt: string | null;
-  requestFingerprint: string;
-  responseClassification: 'delivered' | 'definitive_failure' | 'unknown' | null;
-  reconciliationReference: string | null;
-}
-export type ReplyOutcome =
-  | { classification: 'delivered'; messageId: string; httpStatus?: number }
-  | { classification: 'definitive_failure' | 'unknown'; code: string; httpStatus?: number };
-export interface ReplyDispatchClaim {
-  expectedGeneration: number;
-  expectedRowRevision: number;
-  sourceVersion: number;
-  privacyRevision: number;
-  audienceRevision: number;
-  executorId: string;
-  requestFingerprint: string;
-  at: Date;
-}
+import type { ReplyDeliveryState, ReplyAttemptMetadata, ReplyOutcome, ReplyDispatchClaim } from '../dto/reply-delivery.dto.js';
+export type { ReplyDeliveryState, ReplyAttemptMetadata, ReplyOutcome, ReplyDispatchClaim } from '../dto/reply-delivery.dto.js';
 
 /** Accepted content survives Jobs cleanup. This row alone describes what happened to the reply. */
 @Check({ name: 'reply_delivery_check_1', expression: "state IN ('READY', 'DISPATCHED', 'UNKNOWN', 'DELIVERED', 'FAILED', 'CANCELED', 'EXPIRED')" })

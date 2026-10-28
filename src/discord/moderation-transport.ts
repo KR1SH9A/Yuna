@@ -1,6 +1,7 @@
 /** Discord-only moderation transport: fresh native facts, single dispatch, and exact attributable reconciliation. */
 import { createHash } from 'node:crypto';
 import { MessageFlags, PermissionFlagsBits, Routes, type Client } from 'discord.js';
+import type { DiscordStateReader } from './state-reader.js';
 import { assertDiscordId, assertUuid, invariant } from '../platform/db/entity-values.js';
 
 export type DiscordModerationOperation =
@@ -46,7 +47,8 @@ export function hashDiscordModerationRequest(request: Omit<DiscordModerationRequ
 export class DiscordModerationTransport {
   /** Gateway composition supplies its bounded no-retry REST client and current transport availability. */
   constructor(private readonly getClient: () => Client | undefined, private readonly getBotUserId: () => string | undefined,
-    private readonly isAvailable: () => boolean, private readonly shutdownSignal: AbortSignal) {}
+    private readonly isAvailable: () => boolean, private readonly shutdownSignal: AbortSignal,
+    private readonly stateReader: Pick<DiscordStateReader, 'readRelevantAuditEntries'>) {}
 
   /** Read fresh bot permissions and target hierarchy, resolving only the explicitly requested warning destination. */
   async prepare(input: DiscordModerationPreparationRequest, signal: AbortSignal): Promise<DiscordModerationPreparation> {
@@ -152,14 +154,11 @@ export class DiscordModerationTransport {
         const reference = object(matches[0]).id as string;
         return { source: 'message_lookup', reference, outcome: { classification: 'confirmed', code: 'warning_reconciled', discordMessageId: reference } };
       }
-      const raw = object(await client.rest.get(Routes.guildAuditLog(request.guildId), { signal: combined,
-        query: new URLSearchParams({ limit: '100', user_id: botId, action_type: String(auditTypes[request.operation.kind]) }) }));
-      invariant(Array.isArray(raw.audit_log_entries), 'Invalid audit log');
-      const matches = raw.audit_log_entries.map(object).filter(entry => entry.user_id === botId && entry.target_id === request.targetUserId
-        && entry.action_type === auditTypes[request.operation.kind as 'ban' | 'unban' | 'kick'] && entry.reason === correlationReason(request)
-        && isDiscordId(entry.id) && inAttemptWindow(snowflakeTime(entry.id), request.claimedAt));
-      if (matches.length !== 1 || !this.available(combined)) return null;
-      const reference = matches[0]!.id as string;
+      const evidence = await this.stateReader.readRelevantAuditEntries({ guildId: request.guildId, actorId: botId,
+        targetUserId: request.targetUserId, actionType: auditTypes[request.operation.kind], reason: correlationReason(request),
+        after: new Date(request.claimedAt.getTime() - 5_000), before: new Date(request.claimedAt.getTime() + 120_000) }, combined);
+      if (!evidence.available || evidence.entries.length !== 1 || !this.available(combined)) return null;
+      const reference = evidence.entries[0]!.id;
       return { source: 'discord_audit_log', reference, outcome: { classification: 'confirmed', code: 'moderation_reconciled', discordAuditEntryId: reference } };
     } catch { return null; }
   }
@@ -268,8 +267,6 @@ function safeHttpStatus(error: unknown): number | undefined {
 }
 /** Only correctly shaped snowflakes may become confirmed references. */
 function isDiscordId(value: unknown): value is string { return typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value); }
-/** Discord snowflakes embed their UTC creation timestamp. */
-function snowflakeTime(id: string): number { return Number(BigInt(id) >> 22n) + 1_420_070_400_000; }
 /** Permit bounded service-clock skew and dispatch latency without adopting unrelated older effects. */
 function inAttemptWindow(time: number, claimedAt: Date): boolean { return Number.isFinite(time) && time >= claimedAt.getTime() - 5_000 && time <= claimedAt.getTime() + 120_000; }
 /** Message attribution requires exact author, destination, nonce, content, and an attempt-bound creation time. */

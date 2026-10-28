@@ -1,6 +1,6 @@
 /** Own Discord I/O and recover owner callback failures only after durable availability fencing. */
 import {
-  Client, Events, GatewayIntentBits, MessageFlags, MessageType, Partials, PermissionFlagsBits,
+  Client, Events, GatewayIntentBits, MessageFlags, MessageType, Partials,
   Routes, ApplicationCommandOptionType, ApplicationCommandType,
   type Message, type PartialMessage, type APIMessage, type Interaction,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
@@ -14,13 +14,14 @@ import type {
   DiscordOriginalMessageCapture, DiscordOriginalMessageProvenance, DiscordCommandResponse,
 } from './contracts.js';
 import { discordGrantCapabilities } from './contracts.js';
+import { DiscordStateReader } from './state-reader.js';
 import { DiscordModerationTransport } from './moderation-transport.js';
 import { knowledgeCommandDefinition } from './knowledge-commands.js';
 import { memoryCommandDefinition } from './memory-commands.js';
 import { debateCommandDefinition } from './debate-commands.js';
 import { DiscordDebateTransport } from './debate-transport.js';
 import {
-  hashDiscordContent, hashMessageSource, normalizeConversationMessage, normalizeAdministrationCommand, normalizeOriginalMessage, type ConversationSourceSnapshot,
+  hashDiscordContent, normalizeConversationMessage, normalizeAdministrationCommand, normalizeOriginalMessage, type ConversationSourceSnapshot,
 } from './input-normalizer.js';
 
 export interface DiscordGatewayOptions {
@@ -62,6 +63,11 @@ export const administrationCommandDefinition: Omit<RESTPostAPIChatInputApplicati
     { name: 'unban', description: 'Request an exact unban as a current Discord administrator', type: ApplicationCommandOptionType.Subcommand,
       options: [
         { name: 'target', description: 'Exact Discord account ID', type: ApplicationCommandOptionType.String, required: true, max_length: 20 },
+        { name: 'reason', description: 'Reason retained with this staff request', type: ApplicationCommandOptionType.String, required: true, max_length: 350 },
+      ] },
+    { name: 'kick', description: 'Request an exact staff kick with an application grant', type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        { name: 'target', description: 'Exact current Discord member ID', type: ApplicationCommandOptionType.String, required: true, max_length: 20 },
         { name: 'reason', description: 'Reason retained with this staff request', type: ApplicationCommandOptionType.String, required: true, max_length: 350 },
       ] },
     { name: 'report', description: 'Report a message for review against retained original evidence', type: ApplicationCommandOptionType.Subcommand,
@@ -116,27 +122,6 @@ export interface DiscordGatewayDependencies { readonly createClient: () => Clien
 const unavailableSource: DiscordSourceState = Object.freeze({ exists: false, sourceHash: null, canSend: false });
 const callbackDrainMs = 5_000;
 const callbackRecoveryMs = 1_000;
-const authorityReadMs = 5_000;
-
-interface NativeRole { readonly id: string; readonly position: number; readonly permissions: string }
-interface NativeMember { readonly permissions: string; readonly highest: NativeRole; readonly pending: boolean }
-
-/** Reduce a fresh member/role response to guild permission bits and the highest comparable role. */
-function nativeMember(value: unknown, userId: string, guildId: string, roles: ReadonlyMap<string, NativeRole>): NativeMember {
-  invariant(value !== null && typeof value === 'object', 'Missing Discord member');
-  const member = value as { user?: { id?: unknown }; roles?: unknown; pending?: unknown };
-  invariant(member.user?.id === userId && Array.isArray(member.roles) && member.roles.length <= 1_000, 'Invalid Discord member');
-  invariant(member.pending === undefined || typeof member.pending === 'boolean', 'Invalid member screening state');
-  let highest = roles.get(guildId)!;
-  let permissions = BigInt(highest.permissions);
-  for (const id of member.roles) {
-    invariant(typeof id === 'string' && roles.has(id), 'Unknown Discord role');
-    const role = roles.get(id)!;
-    permissions |= BigInt(role.permissions);
-    if (role.position > highest.position || (role.position === highest.position && BigInt(role.id) < BigInt(highest.id))) highest = role;
-  }
-  return { permissions: permissions.toString(), highest, pending: member.pending === true };
-}
 
 /** Configure a bounded text-only connection with no automatic message-send retries. */
 function createClient(): Client {
@@ -155,26 +140,10 @@ function safeHttpStatus(error: unknown): number | undefined {
   return typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
 }
 
-/** Convert a fresh REST message to the same source snapshot used by Gateway intake. */
-function fromRest(message: APIMessage, guildId: string): ConversationSourceSnapshot {
-  const reference = message.message_reference;
-  return {
-    guildId, channelId: message.channel_id, messageId: message.id, authorId: message.author.id,
-    authorIsBot: message.author.bot ?? false, webhookId: message.webhook_id,
-    system: message.type !== MessageType.Default && message.type !== MessageType.Reply,
-    content: message.content, createdTimestamp: Date.parse(message.timestamp),
-    editedTimestamp: message.edited_timestamp === null ? null : Date.parse(message.edited_timestamp),
-    reference: reference?.message_id ? {
-      guildId: reference.guild_id ?? guildId, channelId: reference.channel_id ?? message.channel_id,
-      messageId: reference.message_id, type: reference.type ?? 0,
-    } : null,
-    directlyMentionsBot: false,
-  };
-}
-
 /** One allowlisted guild, text replies only. Durable delivery ownership lives above this class. */
 export class DiscordGateway implements RuntimeResource {
   readonly name = 'discord';
+  readonly stateReader: DiscordStateReader;
   readonly #options: DiscordGatewayOptions;
   readonly #createClient: () => Client;
   readonly #abort = new AbortController();
@@ -199,6 +168,11 @@ export class DiscordGateway implements RuntimeResource {
     assertDiscordId(options.guildId);
     this.#options = Object.freeze({ ...options });
     this.#createClient = dependencies.createClient;
+    this.stateReader = new DiscordStateReader(options.guildId, {
+      getClient: () => this.#client, getBotUserId: () => this.#botUserId,
+      isAvailable: () => this.#available && !this.#stopping, getEpoch: () => this.#availabilityEpoch,
+      shutdownSignal: this.#abort.signal,
+    });
   }
 
   /** Expose identity only after Discord authenticated the bot. */
@@ -210,7 +184,7 @@ export class DiscordGateway implements RuntimeResource {
   /** Share authenticated transport state with the effect adapter without exposing the SDK client to feature owners. */
   createModerationTransport(): DiscordModerationTransport {
     return new DiscordModerationTransport(() => this.#client, () => this.#botUserId,
-      () => this.#available && !this.#stopping, this.#abort.signal);
+      () => this.#available && !this.#stopping, this.#abort.signal, this.stateReader);
   }
 
   /** Give Debate publication the same configured guild and no-retry REST lifecycle as other Discord effects. */
@@ -297,27 +271,11 @@ export class DiscordGateway implements RuntimeResource {
     return this.#stopping;
   }
 
-  /** Read current content and local permission facts; missing or uncertain access fails closed. */
+  /** Preserve the narrow delivery contract while the shared reader owns current-message coverage and fencing. */
   async readSource(reference: MessageReference, signal: AbortSignal): Promise<DiscordSourceState> {
-    const client = this.#client;
-    if (!client || !this.#allowed(reference) || signal.aborted || this.#abort.signal.aborted) return unavailableSource;
-    const channel = client.channels.cache.get(reference.channelId);
-    if (!channel || !('guildId' in channel) || channel.guildId !== this.#options.guildId || !channel.isSendable()) return unavailableSource;
-    try {
-      const message = await client.rest.get(Routes.channelMessage(reference.channelId, reference.messageId), {
-        signal: AbortSignal.any([signal, this.#abort.signal]),
-      }) as APIMessage;
-      if (!this.#allowed(reference) || signal.aborted || message.id !== reference.messageId || message.channel_id !== reference.channelId
-        || typeof message.content !== 'string') return unavailableSource;
-      const source = fromRest(message, reference.guildId);
-      if (source.editedTimestamp !== null && !Number.isFinite(source.editedTimestamp)) return unavailableSource;
-      const permissions = client.user ? channel.permissionsFor(client.user) : null;
-      const required: bigint[] = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory,
-        channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages];
-      if (channel.isVoiceBased()) required.push(PermissionFlagsBits.Connect);
-      const canSend = Boolean(permissions?.has(required)) && !(channel.isThread() && (channel.archived || channel.locked));
-      return { exists: true, sourceHash: hashMessageSource(source), canSend };
-    } catch { return unavailableSource; }
+    const read = await this.stateReader.readMessage(reference, signal);
+    return read.state === 'present' && read.contentAccess === 'available'
+      ? { exists: true, sourceHash: read.sourceHash, canSend: read.canSend } : unavailableSource;
   }
 
   /** Recheck the source, send once, and preserve uncertainty once the external POST begins. */
@@ -385,78 +343,9 @@ export class DiscordGateway implements RuntimeResource {
     } catch { return null; }
   }
 
-  /** Read native authority directly from REST, outside transactions; missing or changed facts never grant permission. */
-  async readFacts<Operation extends DiscordAuthorityOperation>(caller: DiscordAuthorityCaller, operation: Operation): Promise<DiscordNativeAuthorityFacts<Operation>> {
-    const actorId = caller.actorId, guildId = caller.guildId, sourceRequestId = caller.sourceRequestId;
-    const selected = Object.freeze({ capability: operation.capability,
-      ...(operation.channelId === undefined ? {} : { channelId: operation.channelId }),
-      ...(operation.targetUserId === undefined ? {} : { targetUserId: operation.targetUserId }) });
-    // Measure freshness from the first read, not the end of a potentially slow multi-request observation.
-    const observedAt = new Date();
-    const unavailable: DiscordNativeAuthorityFacts<Operation> = Object.freeze({
-      actorId, guildId, sourceRequestId, operation: selected, observedAt, complete: false,
-      ownerId: '', actorIsMember: false, actorPermissions: '0', botPermissions: '0',
-    });
-    const epoch = this.#availabilityEpoch;
-    const reads = new AbortController();
-    const signal = AbortSignal.any([this.#abort.signal, reads.signal, AbortSignal.timeout(authorityReadMs)]);
-    try {
-      for (const id of [actorId, guildId, sourceRequestId, ...(selected.channelId === undefined ? [] : [selected.channelId]), ...(selected.targetUserId === undefined ? [] : [selected.targetUserId])]) assertDiscordId(id);
-      if (!this.#client || !this.#botUserId || !this.#available || this.#stopping || guildId !== this.#options.guildId
-        || !['administration.manage', ...discordGrantCapabilities].includes(selected.capability)) return unavailable;
-      const client = this.#client, botId = this.#botUserId;
-      // Only an explicit Unknown Member response proves absence; forbidden/timeouts remain incomplete.
-      /** Fetch current membership and treat only Discord’s exact Unknown Member response as absence. */
-      const member = async (userId: string): Promise<unknown | null> => {
-        try { return await client.rest.get(Routes.guildMember(guildId, userId), { signal }); }
-        catch (error) {
-          if (safeHttpStatus(error) === 404 && typeof error === 'object' && error !== null && 'code' in error && error.code === 10007) return null;
-          throw error;
-        }
-      };
-      const [rawGuild, rawRoles, rawActor, rawBot, rawTarget, rawChannel] = await Promise.all([
-        client.rest.get(Routes.guild(guildId), { signal }), client.rest.get(Routes.guildRoles(guildId), { signal }),
-        member(actorId), member(botId), selected.targetUserId ? member(selected.targetUserId) : null,
-        selected.channelId ? client.rest.get(Routes.channel(selected.channelId), { signal }) : null,
-      ]);
-      if (signal.aborted || !this.#available || this.#stopping || epoch !== this.#availabilityEpoch) return unavailable;
-      invariant(rawGuild !== null && typeof rawGuild === 'object', 'Missing guild facts');
-      const guild = rawGuild as { id?: unknown; owner_id?: unknown };
-      invariant(guild.id === guildId, 'Wrong guild facts');
-      assertDiscordId(guild.owner_id as string);
-      if (selected.channelId) {
-        invariant(rawChannel !== null && typeof rawChannel === 'object', 'Missing channel facts');
-        const channel = rawChannel as { id?: unknown; guild_id?: unknown };
-        invariant(channel.id === selected.channelId && channel.guild_id === guildId, 'Channel outside guild');
-      }
-      invariant(Array.isArray(rawRoles) && rawRoles.length > 0 && rawRoles.length <= 1_000, 'Missing guild roles');
-      const roles = new Map<string, NativeRole>();
-      for (const value of rawRoles) {
-        invariant(value !== null && typeof value === 'object', 'Invalid guild role');
-        const role = value as NativeRole;
-        assertDiscordId(role.id);
-        invariant(!roles.has(role.id) && Number.isSafeInteger(role.position) && role.position >= 0
-          && typeof role.permissions === 'string' && /^[0-9]{1,40}$/.test(role.permissions), 'Invalid guild role');
-        roles.set(role.id, { id: role.id, position: role.position, permissions: role.permissions });
-      }
-      invariant(roles.has(guildId), 'Missing everyone role');
-      const actor = rawActor === null ? null : nativeMember(rawActor, actorId, guildId, roles);
-      const bot = nativeMember(rawBot, botId, guildId, roles);
-      invariant(!bot.pending, 'Bot membership incomplete');
-      const target = rawTarget === null || selected.targetUserId === undefined ? null : nativeMember(rawTarget, selected.targetUserId, guildId, roles);
-      // Equal positions follow Discord's snowflake ordering; equal highest roles never outrank one another.
-      /** Compare current highest roles using Discord’s position and snowflake ordering rules. */
-      const aboveTarget = (subject: NativeMember | null) => Boolean(subject && target &&
-        (subject.highest.position > target.highest.position || (subject.highest.position === target.highest.position && BigInt(subject.highest.id) < BigInt(target.highest.id))));
-      return Object.freeze({ actorId, guildId, sourceRequestId, operation: selected, observedAt, complete: true,
-        ownerId: guild.owner_id as string, actorIsMember: actor !== null && !actor.pending,
-        actorPermissions: actor?.permissions ?? '0', botPermissions: bot.permissions,
-        ...(selected.targetUserId ? { target: Object.freeze({ userId: selected.targetUserId, isMember: target !== null,
-          isGuildOwner: selected.targetUserId === guild.owner_id, isSelf: selected.targetUserId === botId,
-          actorAboveTarget: aboveTarget(actor), botAboveTarget: aboveTarget(bot) }) } : {}),
-      });
-    } catch { return unavailable; }
-    finally { reads.abort(); }
+  /** Keep Administration's established authority boundary backed by the shared state reader. */
+  readFacts<Operation extends DiscordAuthorityOperation>(caller: DiscordAuthorityCaller, operation: Operation): Promise<DiscordNativeAuthorityFacts<Operation>> {
+    return this.stateReader.readExecutionFacts(caller, operation);
   }
 
   /** Acknowledge only authenticated in-guild /yuna commands; keep interaction tokens inside the SDK adapter. */

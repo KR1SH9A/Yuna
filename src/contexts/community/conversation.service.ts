@@ -1,4 +1,6 @@
 /** Admit bounded Discord requests and atomically accept current generation results for delivery. */
+import { ReplyPolicy } from './reply.policy.js';
+import type { ConversationAdmission, ChannelReplySettingsDto, ChannelReplySettingsUpdate, CommunityOperationalStatus } from './dto/conversation.dto.js';
 import { LockMode } from '@mikro-orm/core';
 import type { EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import { ConversationRequest } from './entities/conversation-request.entity.js';
@@ -32,7 +34,7 @@ export class ConversationService {
   }
 
   /** Inspect one authorized channel without creating a settings row; revision zero describes the implicit default. */
-  async readChannelSettings(em: EntityManager, channelId: string): Promise<{ channelId: string; mode: 'silent' | 'direct' | 'proactive'; rowRevision: number }> {
+  async readChannelSettings(em: EntityManager, channelId: string): Promise<ChannelReplySettingsDto> {
     invariant(em.isInTransaction(), 'Channel settings require the caller transaction');
     assertDiscordId(channelId);
     const settings = await em.findOne(ChannelReplySettings, { ...this.scope, channelId });
@@ -40,7 +42,7 @@ export class ConversationService {
   }
 
   /** Join an authorized installation transaction, revise one channel and cancel its obsolete pending work. */
-  async updateChannelSettings(em: EntityManager, input: { channelId: string; mode: 'silent' | 'direct'; expectedRowRevision: number | null }, at: Date): Promise<{ channelId: string; mode: 'silent' | 'direct'; rowRevision: number }> {
+  async updateChannelSettings(em: EntityManager, input: ChannelReplySettingsUpdate, at: Date): Promise<{ channelId: string; mode: 'silent' | 'direct'; rowRevision: number }> {
     invariant(em.isInTransaction(), 'Channel settings require the caller transaction');
     assertDiscordId(input.channelId);
     invariant(input.mode === 'silent' || input.mode === 'direct', 'Unsupported reply mode');
@@ -59,7 +61,7 @@ export class ConversationService {
   }
 
   /** Return aggregate operational state only; message text and provider payloads never enter operator status. */
-  async readOperationalStatus(em: EntityManager): Promise<{ pendingRequests: number; readyDeliveries: number; unknownDeliveries: number }> {
+  async readOperationalStatus(em: EntityManager): Promise<CommunityOperationalStatus> {
     const pendingRequests = await em.count(ConversationRequest, { ...this.scope, stage: 'generating', canceledAt: null, deadline: { $gt: new Date() } });
     const readyDeliveries = await em.count(ReplyDelivery, { ...this.scope, state: 'READY' });
     const unknownDeliveries = await em.count(ReplyDelivery, { ...this.scope, state: 'UNKNOWN' });
@@ -67,11 +69,11 @@ export class ConversationService {
   }
 
   /** Admit one durable request per original message, with a fixed deadline and bounded context. */
-  async receiveInput(input: NormalizedConversationMessage): Promise<'admitted' | 'duplicate' | 'ignored' | 'busy'> {
+  async receiveInput(input: NormalizedConversationMessage): Promise<ConversationAdmission> {
     const started = performance.now();
     const now = new Date();
     const deadline = new Date(Math.min(input.createdAt.getTime(), now.getTime()) + 120_000);
-    if (input.guildId !== this.scope.guildId || !input.text.trim() || input.text.length > 4000 || (input.previousReply?.length ?? 0) > 2000 || deadline <= now || input.createdAt.getTime() > now.getTime() + 30_000) return 'ignored';
+    if (!ReplyPolicy.shouldConsiderReply(input, this.scope.guildId, 'direct', now)) return 'ignored';
     const result = await this.orm.em.fork().transactional(async em => {
       const admission = await this.administration.lockAdmission(em, this.scope);
       if (!admission) return 'ignored';
@@ -82,7 +84,7 @@ export class ConversationService {
         settings = new ChannelReplySettings({ ...this.scope, createdAt: now, channelId: input.channelId, mode: 'direct', approvedKnowledgeScope: { schemaVersion: 1, entryIds: [] }, limits: { schemaVersion: 1, maxContextMessages: 1, maxContextCharacters: 6000, deadlineSeconds: 120 } });
         em.persist(settings);
       }
-      if (settings.mode !== 'direct') return 'ignored';
+      if (!ReplyPolicy.shouldConsiderReply(input, this.scope.guildId, settings.mode, now)) return 'ignored';
       const policy = await this.administration.readPolicyConfig(em, this.scope);
       const purgeAfter = new Date(now.getTime() + policy.retention.payloadDays * 86400_000);
       const metadataPurgeAfter = new Date(now.getTime() + policy.retention.metadataDays * 86400_000);
@@ -151,7 +153,8 @@ export class ConversationService {
           || Boolean(this.knowledge && await this.knowledge.validateBindings(em, request.contextBindings, request.audienceBinding, now));
         const valid = admission && admission.safetyRevision === completion.safetyRevision && source && request && settings?.mode === 'direct' && settings.rowRevision === request.settingsRevision
           && request.stage === 'generating' && request.expectedTaskId === completion.taskId && !request.canceledAt && request.deadline > now && !request.payloadPurgedAt
-          && knowledgeCurrent && completion.outcome === 'success' && typeof text === 'string' && text.trim().length > 0 && text.length <= 2000;
+          && knowledgeCurrent && ReplyPolicy.validateAudience(request.audienceBinding, request.sourceChannelId)
+          && completion.outcome === 'success' && ReplyPolicy.validateReply(text);
         if (valid && request) {
           request.acceptReply({ taskId: completion.taskId, resultId: completion.resultId, sourceVersion: completion.sourceRevision, cancellationGeneration: request.cancellationGeneration, expectedRowRevision: request.rowRevision, at: now });
           em.persist(new ReplyDelivery({ ...this.scope, createdAt: now, requestId: request.id, acceptedResultReference: completion.resultId, acceptedContent: text!, supportingReferences: request.contextBindings ?? [],

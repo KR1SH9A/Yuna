@@ -158,7 +158,7 @@ export function normalizeAdministrationCommand(source: AdministrationCommandSnap
     if (selected.type === 2 && selected.name === 'knowledge') return normalizeKnowledgeCommand(source);
     if (selected.type === 2 && selected.name === 'memory') return normalizeMemoryCommand(source, selected);
     if (selected.type === 2 && selected.name === 'debate') return normalizeDebateCommand(source, selected);
-    if (selected.type !== 1 || selected.value !== undefined || !['status', 'bootstrap', 'configure', 'remove', 'grant', 'revoke', 'pause', 'resume', 'channel', 'channel-status', 'ban', 'unban', 'report', 'action', 'usage', 'limit', 'limit-clear'].includes(selected.name)) return null;
+    if (selected.type !== 1 || selected.value !== undefined || !['status', 'bootstrap', 'configure', 'remove', 'grant', 'revoke', 'pause', 'resume', 'channel', 'channel-status', 'ban', 'unban', 'kick', 'report', 'action', 'usage', 'limit', 'limit-clear'].includes(selected.name)) return null;
     const entries = selected.options ?? [];
     if (!Array.isArray(entries) || entries.length > 5) return null;
     const values = new Map<string, { type: number; value?: unknown }>();
@@ -171,7 +171,7 @@ export function normalizeAdministrationCommand(source: AdministrationCommandSnap
       revoke: ['grant-id', 'authority-revision', 'row-revision', 'reason'],
       pause: ['safety-revision', 'reason'], resume: ['safety-revision'], channel: ['channel', 'mode', 'row-revision'],
       'channel-status': ['channel'],
-      ban: ['target', 'reason', 'delete-seconds'], unban: ['target', 'reason'], report: ['channel', 'message-id', 'allegation'],
+      ban: ['target', 'reason', 'delete-seconds'], unban: ['target', 'reason'], kick: ['target', 'reason'], report: ['channel', 'message-id', 'allegation'],
       action: ['action-id'], usage: [], limit: ['attempts', 'amount', 'currency'], 'limit-clear': [],
     };
     const allowed = allowedOptions[selected.name]!;
@@ -194,7 +194,7 @@ export function normalizeAdministrationCommand(source: AdministrationCommandSnap
         command = { ...identity, command: 'limit', arguments: Object.freeze({ ...(dailyAttemptLimit !== undefined ? { dailyAttemptLimit } : {}),
           ...(amount !== undefined ? { dailyBudget: Object.freeze({ amount, currency: currency! }) } : {}) }) }; break;
       }
-      case 'ban': case 'unban': {
+      case 'ban': case 'unban': case 'kick': {
         const targetUserId = readCommandOption(values, 'target', 3) as string;
         assertDiscordId(targetUserId);
         const reason = readCommandOption(values, 'reason', 3, 0, 350) as string;
@@ -203,7 +203,7 @@ export function normalizeAdministrationCommand(source: AdministrationCommandSnap
           const deleteMessageSeconds = values.has('delete-seconds') ? readCommandOption(values, 'delete-seconds', 4) as number : 0;
           invariant(deleteMessageSeconds <= 604800, 'History deletion exceeds seven days');
           command = { ...identity, command: 'ban', arguments: Object.freeze({ targetUserId, reason, deleteMessageSeconds }) };
-        } else command = { ...identity, command: 'unban', arguments: Object.freeze({ targetUserId, reason }) };
+        } else command = { ...identity, command: selected.name, arguments: Object.freeze({ targetUserId, reason }) };
         break;
       }
       case 'report': {

@@ -1,31 +1,13 @@
-/** Share bounded audience, mention, encrypted continuation and context-reference values inside Community. */
+/** Validate shared Community bindings and advance bounded durable revisions. */
 import { assertDate, assertDiscordId, assertNonNegativeInteger, invariant } from '../../../platform/db/entity-values.js';
 
-export interface AudienceBinding {
-  schemaVersion: 1;
-  visibility: 'channel' | 'requester';
-  channelId: string;
-  requesterUserId: string | null;
-  revision: number;
-}
-export interface AllowedMentions { users: string[]; roles: string[]; everyone: false; repliedUser: boolean }
-/** Ciphertext only. ISO timestamps keep this bounded continuation compatible with JSONB. */
-export interface InteractionContinuation {
-  schemaVersion: 1;
-  applicationId: string;
-  interactionId: string;
-  tokenCiphertext: string;
-  tokenKeyId: string;
-  tokenExpiresAt: string;
-  acknowledgment: 'deferred';
-  acknowledgedAt: string;
-  ephemeral: boolean;
-}
-export interface ContextBinding { owner: 'intake' | 'knowledge' | 'memory'; recordId: string; revision: number; contentHash: string }
+import type { AudienceBinding, AllowedMentions, InteractionContinuation } from '../contracts.js';
+export type { AudienceBinding, AllowedMentions, InteractionContinuation, ContextBinding } from '../contracts.js';
 
 /** Require an exact channel identity and a requester for private audiences before content can be bound to delivery. */
 export function validateAudience(binding: AudienceBinding): void {
   invariant(binding.schemaVersion === 1, 'Unsupported audience schema');
+  invariant(binding.visibility === 'channel' || binding.visibility === 'requester', 'Invalid audience visibility');
   assertDiscordId(binding.channelId);
   assertNonNegativeInteger(binding.revision, 'audience revision');
   invariant(binding.revision <= 2147483647, 'Audience revision exceeds storage range');

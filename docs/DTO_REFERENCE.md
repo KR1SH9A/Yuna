@@ -2,7 +2,7 @@
 
 Yuna keeps request/response shapes next to the feature that owns each operation. This reference maps current executable boundaries and preserves catalogs for optional future extensions. The [entity reference](DATA_MODEL_REFERENCE.md) defines stored-record ownership; the [architecture reference](ARCHITECTURE_PLAN.md) covers durable execution and recovery.
 
-Runtime contracts now cover Administration, Community/Knowledge, original-message Moderation, explicit private Memory, consented Debates and per-user usage. Discord ingress uses `src/discord/contracts.ts` plus the command-group normalizers; AI input/output lives under `src/ai/contracts`, and restricted owner-specific task stores live under `src/platform/jobs`. Services validate values and return bounded plain DTOs. Bot/worker composition is ordinary TypeScript, not NestJS. Optional governance DTOs, artifact contracts and versioned embedding input/results are now executable component boundaries; command, persistence and worker integration are not enabled merely by importing them. Legacy generic-routing catalogs remain navigation references.
+Runtime contracts now cover Administration, Community/Knowledge, original-message Moderation, explicit private Memory, consented Debates and per-user usage. Discord ingress uses `src/discord/contracts.ts` plus the command-group normalizers; AI input/output lives under `src/ai/contracts`, and restricted owner-specific task stores live under `src/platform/jobs`. Services validate values and return bounded plain DTOs. Bot/worker composition is ordinary TypeScript, not NestJS. Optional governance DTOs, artifact contracts and versioned embedding input/results are now executable component boundaries; command, persistence and worker integration are not enabled merely by importing them. The scaffold audit in [IMPLEMENTATION_AUDIT.md](IMPLEMENTATION_AUDIT.md) records retired catalogs and their live owners; production TypeScript no longer carries design-only files.
 
 `DiscordCommandResponse` is either a bounded private string or a string with one bounded UTF-8 JSON attachment. Debate scope/result reviews use the attachment to preserve the full rubric, model, participants, paying initiator, retention and publication scope rather than silently truncating consent material. The Gateway keeps SDK objects/tokens private, defers ephemerally and disables mentions on every response.
 
@@ -15,10 +15,10 @@ Runtime contracts now cover Administration, Community/Knowledge, original-messag
 | Feature services | Application operations, transactions and workflow progression | Change how a report becomes a case |
 | Feature policies | Rules evaluated from supplied values | Change an eligibility rule without adding I/O |
 | Feature `entities/` | Private persisted records and local transitions | Add a stored revision or outcome field |
-| Feature module | Providers, private entity registration and explicit exports | Make an existing service available to bot recovery |
+| Application composition | Explicit service construction and dependency wiring | Connect an existing owner to bot recovery |
 | `apps/bot` handlers | Discord, completion and recovery entry points | Validate an interaction and route it to an operation |
 | `src/discord/dto` | Normalized transport events and verified invocation metadata | Handle a partial Discord message consistently |
-| `src/platform/jobs/dto` | Queue notification envelopes | Validate a wake-up reference before loading its task |
+| `src/platform/jobs/*task.contracts.ts` | Durable owner-specific task/result contracts | Add an exact versioned route without treating wakeups as authority |
 | `src/ai/contracts` | Versioned capability inputs/results and runtime schema specifications | Add an observation field or validate a provider result |
 
 For example, the Moderation feature keeps a shallow structure:
@@ -27,11 +27,10 @@ For example, the Moderation feature keeps a shallow structure:
 src/contexts/moderation/
   moderation.module.ts           # Registers private records and exports named services
   moderation.service.ts          # Intake, original capture coverage and AI result acceptance
-  staff-moderation.service.ts     # Authenticated ban, unban and optional kick requests
+  staff-moderation.service.ts     # Authenticated ban, unban and kick requests
   moderation.policy.ts           # Pure decision rules
-  ban.service.ts                 # Ban/unban intent, dispatch and recovery
-  warning.service.ts             # Warning intent, dispatch and recovery
-  kick.service.ts                # Optional explicit kick operations
+  moderation-workflow.service.ts # Observation/assessment acceptance and warning/ban intents
+  action-execution.service.ts    # Shared target gate, dispatch, outcome and recovery
   contracts.ts                   # EvidenceBinding and Disposition values
   dto/
     moderation-intake.dto.ts      # Message/report/revision arguments and case response
@@ -65,11 +64,11 @@ Normalized message DTOs include both trusted source metadata and untrusted conte
 | --- | --- | --- |
 | Discord event normalization | IDs as strings, supported event shape, bounded content, explicit missing fields | Current installation, attribution-dependent eligibility and permissions |
 | Feature operation arguments | Required fields, known variants, lengths/counts, reference syntax and expected revision shape | Current revision equality, same-guild ownership, authority and policy |
-| Queue notification | Supported envelope version and task-reference shape | Claim eligibility, stored ownership, deadline and disclosure permission |
+| PostgreSQL notification | The configured notification channel; payloads are ignored | Durable scan, claim eligibility, stored ownership, deadline and disclosure permission |
 | Prepared AI input / provider output | Exact capability schema/version, limits and required result structure | Business interpretation, expected operation, current evidence/privacy and action authorization |
 | Public response | Allowlisted fields, bounded content and coherent status/outcome | Which audience may receive those fields |
 
-Wire validation into Discord handlers and queue consumers explicitly. An HTTP validation pipeline is not the specification for these entry points. TypeScript annotations and DTO filenames provide no runtime checks on their own. Reuse the existing runtime validators and keep one authoritative validation definition for each boundary shape; add a library only when a concrete need justifies it.
+Wire validation into Discord handlers and stored task consumers explicitly. An HTTP validation pipeline is not the specification for these entry points. TypeScript annotations and DTO filenames provide no runtime checks on their own. Reuse the existing runtime validators and keep one authoritative validation definition for each boundary shape; add a library only when a concrete need justifies it.
 
 Never spread raw command options into trusted context or serialize an ORM entity directly. Reject unexpected identity/authority fields. Revalidate retained serialized input at its versioned boundary. Provider-schema success does not make a finding correct or authorize a sanction.
 
@@ -82,16 +81,16 @@ The files below contain fields, producer/consumer responsibilities and validatio
 | File | DTOs | Service operations and direction |
 | --- | --- | --- |
 | [moderation-intake.dto.ts](../src/contexts/moderation/dto/moderation-intake.dto.ts) | `IngestMessageDto`, `ReportMessageDto`, `CompleteOriginalCaptureDto`, `ModerationCaseDto` | Arguments into `ModerationService.ingestMessage`, `ingestReport`, `completeOriginalCapture`; authorized case/progress out of human operations and small internal dispositions out of acceptance. Original source identity remains separate. Capture completion may improve the same original; edits/deletion do not become replacement evidence. Internal acceptance returns a small continuation outcome; human-facing case views require an authorized projection. |
-| [staff-sanction.dto.ts](../src/contexts/moderation/dto/staff-sanction.dto.ts) | `BanRequestDto`, `UnbanRequestDto`, optional `KickRequestDto`, `StaffSanctionResultDto` | Arguments into `StaffModerationService.requestBan`, `requestUnban`, optional `requestKick`; authorized acceptance/denial out. |
-| [action-outcome.dto.ts](../src/contexts/moderation/dto/action-outcome.dto.ts) | `ModerationActionOutcomeDto`, `ModerationRecoveryResultDto` | Internal bounded responses from `BanService`, `WarningService` and optional `KickService` dispatch/reconciliation/recovery. No arbitrary public execution request. |
+| [staff-sanction.dto.ts](../src/contexts/moderation/dto/staff-sanction.dto.ts) | `BanRequestDto`, `UnbanRequestDto`, `KickRequestDto`, `StaffSanctionResultDto` | Arguments into `StaffModerationService.requestBan`, `requestUnban`, `requestKick`; authorized acceptance/denial out. |
+| [action-outcome.dto.ts](../src/contexts/moderation/dto/action-outcome.dto.ts) | `ModerationActionOutcomeDto`, `ModerationRecoveryResultDto` | Internal bounded responses from the shared `ActionExecutionService` dispatch/reconciliation/recovery. No arbitrary public execution request. |
 
 ### Community
 
 | File | DTOs | Service operations and direction |
 | --- | --- | --- |
-| [conversation.dto.ts](../src/contexts/community/dto/conversation.dto.ts) | `ConversationInputDto`, `CancelConversationDto`, `ConversationResultDto` | Arguments into `ConversationService.receiveInput` / `cancelRequest`; permitted progress out of admission and `getConversationStatus`; internal acceptance returns applied/discarded/alreadyHandled. |
+| [conversation.dto.ts](../src/contexts/community/dto/conversation.dto.ts) | `ConversationAdmission`, `ChannelReplySettingsDto`, `ChannelReplySettingsUpdate`, `CommunityOperationalStatus` | Admission disposition and bounded configuration/status values used by ConversationService. Message input and cancellation reuse the normalized message/reference contracts. Completion acceptance returns a count. |
 | [knowledge.dto.ts](../src/contexts/community/dto/knowledge.dto.ts) | `ApproveKnowledgeEntryDto`, `ChangeKnowledgeVisibilityDto`, `RetireKnowledgeEntryDto`, `VisibleKnowledgeQueryDto`, `KnowledgeEntryDto` | Arguments into `KnowledgeService.approveEntry`, `changeVisibility`, `retireEntry`, `findVisibleEntries`; scoped entry views out. Automatic lookup uses verified source/installation/audience values; human operations also carry `TrustedCallerContext`. |
-| [reply-delivery.dto.ts](../src/contexts/community/dto/reply-delivery.dto.ts) | `ReplyDeliveryOutcomeDto`, `ReplyRecoveryResultDto` | Internal bounded publication/recovery responses from `ReplyDeliveryService`; confirmed and unknown delivery remain distinct. |
+| [reply-delivery.dto.ts](../src/contexts/community/dto/reply-delivery.dto.ts) | `ReplyDeliveryState`, `ReplyAttemptMetadata`, `ReplyDispatchClaim`, `ReplyOutcome` | Claims and observed outcomes for the durable ReplyDelivery record; confirmed and unknown delivery remain distinct. |
 
 ### Administration
 
@@ -133,17 +132,17 @@ ID-only task signals resolve through `TaskService.readTaskDescriptor` in the bot
 
 ## Public module providers
 
-The following catalog records logical public boundaries. Some module files are design comments rather than dependency-injection classes; executable composition directly constructs the named owners. Importing a DTO/type does not grant permission or expose a private repository.
+The following catalog records logical public boundaries. Executable composition directly constructs the named owners; logical context boundaries do not require dependency-injection classes. Importing a DTO/type does not grant permission or expose a private repository.
 
 | Module | Public provider exports | Private implementation |
 | --- | --- | --- |
-| [ModerationModule](../src/contexts/moderation/moderation.module.ts) | `ModerationService`, `ModerationWorkflowService`, `StaffModerationService`, `ActionExecutionService`; kick remains optional | Policies, seven entity registrations and owner-controlled persistence queries |
-| [CommunityModule](../src/contexts/community/community.module.ts) | `ConversationService`, `KnowledgeService`, `ReplyDeliveryService` | Reply policy, four entity registrations and owner-controlled persistence queries |
-| [AdministrationModule](../src/contexts/administration/administration.module.ts) | `AuthorityService`, `SafetyService`, `GuildLifecycleService`, `ConfigurationService`, `RemovalService`; optional `GovernanceService` | Authority policy, baseline/optional entity registrations and persistence |
+| [ModerationModule](../src/contexts/moderation/moderation.module.ts) | `ModerationService`, `ModerationWorkflowService`, `StaffModerationService`, `ActionExecutionService`; staff kicks use the shared execution path | Policies, seven entity registrations and owner-controlled persistence queries |
+| [Community composition](../apps/bot/bot.module.ts) | `ConversationService`, `KnowledgeService`, `ReplyDeliveryService` | Reply policy, four entity registrations and owner-controlled persistence queries |
+| [Administration composition](../apps/bot/bot.module.ts) | `AuthorityService`, `SafetyService`, `GuildLifecycleService`, `ConfigurationService`, `RemovalService`; optional `GovernanceService` | Authority policy, baseline/optional entity registrations and persistence |
 | [MemoryModule](../src/contexts/memory/memory.module.ts) | `MemoryService` | Consent/storage policy and three active records; embeddings remain optional |
-| [DebatesModule](../src/contexts/debates/debates.module.ts) | `DebateService`, `DebatePublicationService` | Scoring policy, six entity registrations and persistence |
+| [Debates composition](../apps/bot/bot.module.ts) | `DebateService`, `DebatePublicationService` | Scoring policy, six entity registrations and persistence |
 | [Discord adapter](../src/discord/discord.module.ts) | `DiscordGateway`, normalization functions, narrow moderation/debate transports | SDK client/connection, current native facts and transport mapping |
-| [Jobs composition](../src/platform/jobs/jobs.module.ts) | Bot: conversation/moderation/debate task services; worker: their restricted stores | SQL recovery, notification hints and durable scans; generic relay/coordinator catalogs remain design references |
+| [Jobs composition](../apps/ai-worker/ai-worker.module.ts) | Bot: conversation/moderation/debate task services; worker: their restricted stores | SQL recovery, notification hints and durable scans; completion/recovery handlers and the static worker registry are executable |
 
 Effect services are exported because the bot dispatch/recovery handlers consume their operations. Their methods still enforce current owner gates; an export is not permission to perform an unchecked effect. AI provider modules remain worker-only, and the static task lookup is not an injectable registry service.
 

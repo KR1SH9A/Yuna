@@ -1,29 +1,70 @@
-/**
- * Planned component: RecoveryHandlers
- * Kind: Scheduled entry points
- * Owner: Bot application
- * Status: Navigation/design reference; runtime ownership is described below.
- *
- * Current implementation: bot.module.ts wires owner maintenance loops; task services recover restricted attempts and feature owners reconcile external effects. There is no second scheduler.
- * The remaining planned catalog is not an additional required implementation.
- *
- * Responsibility:
- * Start bounded recovery batches; business owners retain recovery decisions.
- *
- * Planned methods:
- * - recoverTasks: Invoke TaskRecoveryService for expired attempts, missing work signals and stored
- *   results that have not been accepted.
- * - publishOutbox: Invoke OutboxRelay to deliver committed work references.
- * - recoverEffects: Invoke BanService, WarningService and enabled KickService recoverDueActions
- *   plus ReplyDeliveryService.recoverDueDeliveries. Pass bounded criteria; candidate queries and
- *   dispatch/reconciliation decisions stay with owners.
- * - runRetention: Invoke MemoryService.expireFacts when enabled and ArtifactStore deleteExpired.
- *   Additional owner entry points for moderation evidence, community request and debate transcript
- *   retention/removal remain deferred until their retention rules are chosen; this handler must
- *   never delete those records directly.
- *
- * Invariants:
- * Fresh ORM context per batch, bounded work size, and safe concurrent scheduling. Never blindly
- * resend a Discord operation whose outcome remains unknown. No direct queries of another context's
- * entities from these handlers.
- */
+/** Schedule bounded recovery and retention independently; unknown effects are reconciled by their owners. */
+import { runBackgroundLoop } from '../../src/platform/runtime/background-loop.js';
+import type { ConversationService } from '../../src/contexts/community/conversation.service.js';
+import type { ReplyDeliveryService } from '../../src/contexts/community/reply-delivery.service.js';
+import type { DebateService } from '../../src/contexts/debates/debate.service.js';
+import type { MikroORM } from '@mikro-orm/postgresql';
+import type { TaskService } from '../../src/platform/jobs/task.service.js';
+import type { GuildLifecycleService, InstallationScope } from '../../src/contexts/administration/guild-lifecycle.service.js';
+import type { RemovalService } from '../../src/contexts/administration/removal.service.js';
+import type { ModerationService } from '../../src/contexts/moderation/moderation.service.js';
+import type { ActionExecutionService } from '../../src/contexts/moderation/action-execution.service.js';
+import type { MemoryService } from '../../src/contexts/memory/memory.service.js';
+import type { DebatePublicationService } from '../../src/contexts/debates/debate-publication.service.js';
+import type { AuditRecorder } from '../../src/platform/audit/audit.recorder.js';
+
+/** Create existing serial loops without doing external I/O inside retention's privacy transaction. */
+export function startRecoveryHandlers(input: {
+  signal: AbortSignal; orm: MikroORM; scope: InstallationScope;
+  administration: Pick<GuildLifecycleService, 'lockPrivacy'>; removal: Pick<RemovalService, 'runCleanup'>;
+  tasks: Pick<TaskService, 'recoverExpired'>; conversation: Pick<ConversationService, 'runRetention'>;
+  delivery: Pick<ReplyDeliveryService, 'reconcileDueDeliveries'>; memory: Pick<MemoryService, 'runRetention'>;
+  moderation: Pick<ModerationService, 'runRetention'>; actionExecution: Pick<ActionExecutionService, 'recoverDueActions'>;
+  debates: Pick<DebateService, 'runRetention'>; debatePublication: Pick<DebatePublicationService, 'runMaintenance'>;
+  audit: Pick<AuditRecorder, 'purgeExpired'>;
+}): Promise<void>[] {
+  const { signal: stop, orm, scope, administration, removal, tasks, conversation, delivery, memory,
+    moderation, actionExecution, debates, debatePublication, audit } = input;
+  return [
+    runBackgroundLoop({ signal: stop, intervalMs: 5_000,
+      /** Publish accepted Debate summaries once and reconcile uncertain sends without resending them. */
+      async run() { await debatePublication.runMaintenance(stop); },
+      /** Avoid exposing participant text or transport errors through operational logs. */
+      onError: () => console.warn('bot: Debate publication deferred after a storage/transport failure.'),
+    }),
+    runBackgroundLoop({ signal: stop, intervalMs: 5_000,
+      /** Dispatch eligible moderation actions once and reconcile uncertain effects. */
+      async run() { await actionExecution.recoverDueActions(stop); },
+      /** Report a bounded background failure while allowing the durable recovery loop to retry. */
+      onError: () => console.warn('bot: moderation execution deferred after a storage/transport failure.'),
+    }),
+    runBackgroundLoop({ signal: stop, intervalMs: 5_000,
+      /** Recover expired task leases through the restricted durable task lifecycle. */
+      async run() { await tasks.recoverExpired(orm.em.fork(), 50); },
+      /** Report a bounded background failure while allowing the durable recovery loop to retry. */
+      onError: () => console.warn('bot: task recovery deferred after a storage failure.'),
+    }),
+    runBackgroundLoop({ signal: stop, intervalMs: 15_000,
+      /** Reconcile uncertain replies separately so slow lookups cannot delay new ready deliveries. */
+      run: () => delivery.reconcileDueDeliveries(stop),
+      /** Report a bounded background failure while allowing the durable recovery loop to retry. */
+      onError: () => console.warn('bot: reconciliation deferred after a storage/transport failure.'),
+    }),
+    runBackgroundLoop({ signal: stop, intervalMs: 60_000,
+      /** Run owner retention and installation cleanup after short-lived work has been fenced. */
+      async run() {
+        await conversation.runRetention();
+        await memory.runRetention();
+        await orm.em.fork().transactional(async em => {
+          await administration.lockPrivacy(em, scope);
+          await moderation.runRetention(em, new Date());
+          await debates.runRetention(em, new Date());
+          await audit.purgeExpired(em, scope);
+        });
+        await removal.runCleanup();
+      },
+      /** Report a bounded background failure while allowing the durable recovery loop to retry. */
+      onError: () => console.warn('bot: retention deferred after a storage failure.'),
+    }),
+  ];
+}

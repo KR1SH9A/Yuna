@@ -84,6 +84,8 @@ test('channel status binds the trusted caller and displays only the selected cha
 test('sanction responses report recorded state without claiming execution, and report intake never implies a violation', async () => {
   const { services, calls } = fixture();
   services.staffModeration = { /** Capture the exact staff ban request without executing any sanction. */ async requestBan(caller, input) { calls.push([caller, input]); return { status: 'accepted', actionId: 'action', kind: 'ban', state: 'READY' }; },
+    /** Capture an exact staff kick without asserting that Discord executed it. */
+    async requestKick(caller, input) { calls.push([caller, input]); return { status: 'accepted', actionId: 'kick-action', kind: 'kick', state: 'READY' }; },
     /** Return a bounded action-status fixture without exposing moderation evidence. */
     async readActionStatus() { return { actionId: 'action', kind: 'ban', state: 'UNKNOWN', unresolved: true, reasonCode: 'timeout' }; },
     /** Capture the exact administrator unban request without executing it. */
@@ -93,6 +95,8 @@ test('sanction responses report recorded state without claiming execution, and r
   expect(await handleAdministrationCommand({ ...identity, command: 'ban', arguments: { targetUserId: '5', reason: 'Explicit', deleteMessageSeconds: 0 } }, services)).toContain('READY');
   expect(await handleAdministrationCommand({ ...identity, command: 'unban', arguments: { targetUserId: '5', reason: 'Explicit' } }, services)).toContain('UNKNOWN');
   expect(await handleAdministrationCommand({ ...identity, command: 'report', arguments: { channelId: '3', messageId: '6', allegation: 'Report' } }, services)).toContain('does not establish a violation');
+  expect(await handleAdministrationCommand({ ...identity, command: 'kick', arguments: { targetUserId: '5', reason: 'Explicit' } }, services)).toContain('kick-action: kick; READY');
+  expect(calls.at(-1)).toEqual([{ ...services.scope, actorId: identity.actorId, sourceRequestId: identity.sourceRequestId }, { targetUserId: '5', reason: 'Explicit' }]);
   expect((calls[0] as unknown[])[0]).toEqual({ ...services.scope, actorId: identity.actorId, sourceRequestId: identity.sourceRequestId });
 });
 

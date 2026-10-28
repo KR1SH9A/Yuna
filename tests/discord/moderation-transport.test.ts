@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from '@jest/globals';
 import { PermissionFlagsBits, Routes, type Client } from 'discord.js';
+import { DiscordStateReader } from '../../src/discord/state-reader.js';
 import { DiscordModerationTransport, hashDiscordModerationRequest, type DiscordModerationOperation,
   type DiscordModerationPreparationRequest, type DiscordModerationRequest } from '../../src/discord/moderation-transport.js';
 
@@ -74,7 +75,9 @@ function request(operation?: DiscordModerationOperation): DiscordModerationReque
 function harness() {
   const client = new FakeClient(), shutdown = new AbortController(); let available = true;
   return { client, shutdown, unavailable: () => { available = false; }, transport: new DiscordModerationTransport(
-    () => client as unknown as Client, () => botId, () => available, shutdown.signal) };
+    () => client as unknown as Client, () => botId, () => available, shutdown.signal,
+    new DiscordStateReader(guildId, { getClient: () => client as unknown as Client, getBotUserId: () => botId,
+      isAvailable: () => available, getEpoch: () => 0, shutdownSignal: shutdown.signal })) };
 }
 /** Warnings carry only their approved text and explicit mention allowlist. */
 function warning(destination: 'dm' | 'channel' = 'dm'): DiscordModerationOperation {

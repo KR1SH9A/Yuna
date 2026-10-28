@@ -22,7 +22,7 @@ export interface AdministrationCommands {
   configuration: Pick<ConfigurationService, 'status' | 'applyConfiguration' | 'updateChannelSettings'>
     & Partial<Pick<ConfigurationService, 'readChannelSettings'>>;
   removal: Pick<RemovalService, 'beginRemoval'>;
-  staffModeration?: Pick<StaffModerationService, 'requestBan' | 'requestUnban' | 'readActionStatus'>;
+  staffModeration?: Pick<StaffModerationService, 'requestBan' | 'requestUnban' | 'requestKick' | 'readActionStatus'>;
   moderation?: Pick<ModerationService, 'ingestReport'>;
   knowledge?: Pick<KnowledgeService, 'approveEntry' | 'changeVisibility' | 'retireEntry' | 'readEntry' | 'searchEntries'>;
   memory?: Pick<MemoryService, 'setConsent' | 'remember' | 'inspectOwnFacts' | 'forget'>;
@@ -91,10 +91,11 @@ export async function handleAdministrationCommand(command: NormalizedAdministrat
         const action = await services.staffModeration.readActionStatus(caller, command.arguments.actionId);
         return `Action ${action.actionId}: ${action.kind}; ${action.state}; ${action.reasonCode ?? 'awaiting dispatch'}. Unresolved: ${action.unresolved}.`;
       }
-      case 'ban': case 'unban': {
+      case 'ban': case 'unban': case 'kick': {
         if (!services.staffModeration) return 'Staff moderation is unavailable.';
         const action = command.command === 'ban' ? await services.staffModeration.requestBan(caller, command.arguments)
-          : await services.staffModeration.requestUnban(caller, command.arguments);
+          : command.command === 'kick' ? await services.staffModeration.requestKick(caller, command.arguments)
+            : await services.staffModeration.requestUnban(caller, command.arguments);
         return `Moderation request ${action.actionId}: ${action.kind}; ${action.state}. This is the recorded workflow state; Discord execution is reported separately.`;
       }
       case 'report': {
