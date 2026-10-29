@@ -1,24 +1,44 @@
-/** A narrow channel-operation vocabulary parsed from the caller's own message, never from model output or chat context. */
+/** A narrow channel-operation vocabulary parsed from the caller's own message, revalidated after natural-language planning. */
 import { assertDiscordId, invariant } from '../platform/db/entity-values.js';
 
 export type ChannelChoreRequest =
-  | { kind: 'create'; channelType: 0 | 2 | 4; name: string }
+  | { kind: 'create'; channelType: 0 | 2 | 4; name: string; parentId?: string | null }
+  | { kind: 'move'; channel: string; parentId: string | null }
   | { kind: 'rename'; channel: string; name: string }
   | { kind: 'topic'; channel: string; topic: string }
   | { kind: 'slowmode'; channel: string; seconds: number }
   | { kind: 'voice_limit'; channel: string; limit: number };
 export type ChannelChoreOperation =
-  | { kind: 'create'; channelType: 0 | 2 | 4; name: string }
-  | { kind: 'modify'; channelId: string; channelType: 0 | 2 | 4; field: 'name' | 'topic' | 'rate_limit_per_user' | 'user_limit'; value: string | number; previous: string | number | null };
+  | { kind: 'create'; channelType: 0 | 2 | 4; name: string; parentId?: string | null }
+  | { kind: 'modify'; channelId: string; channelType: 0 | 2 | 4; field: 'name' | 'topic' | 'rate_limit_per_user' | 'user_limit' | 'parent_id'; value: string | number | null; previous: string | number | null };
 export interface ChannelChoreCaller { guildId: string; actorId: string; channelId: string; messageId: string; sourceHash: string }
 export type ChannelChoreOutcome = { state: 'CONFIRMED'; channelId: string } | { state: 'FAILED' | 'UNKNOWN'; reason: string };
 
 /** Accept one explicit imperative, including polite wording; discussion, code, bulk requests and hidden characters cannot become commands. */
 export function parseChannelChore(text: string): ChannelChoreRequest | null {
   if (typeof text !== 'string' || text.length > 1400 || /[\p{Cc}\p{Cf}`]/u.test(text)) return null;
-  const request = text.trim().replace(/^yuna\b\s*[,!:]?\s*/i, '').replace(/\s*,?\s+yuna[.!?]?$/i, '')
-    .replace(/^(?:(?:can|could|would) you\s+)?(?:please\s+)?/i, '').replace(/[.!?]$/, '').trim();
-  const create = /^(?:create|make|add)\s+(?:a\s+|an\s+)?(text channel|voice channel|vc|category)\s+(?:(?:called|named)\s+)?(.+)$/i.exec(request);
+  // Normalization can leave a comma after an actual @mention. Strip only framing at the edges, never search for a command inside prose.
+  let request = text.trim().replace(/^[,!:]\s*/, '');
+  for (let count = 0; count < 6; count++) {
+    const rest = request.replace(/^(?:yuna|ok(?:ay)?|hey|hi|hello|alright|all right|sure|yes|please|(?:can|could|would) you)(?:\s*[,!:]\s*|\s+|$)/i, '');
+    if (rest === request) break;
+    request = rest;
+  }
+  request = request.trim().replace(/[.!?]$/, '').trim();
+  for (let count = 0; count < 4; count++) {
+    const parsed = parseChoreInstruction(request);
+    if (parsed) return parsed;
+    // Parse first: a channel actually named Yuna or please must retain its complete argument.
+    const rest = request.replace(/(?:\s*,\s*|\s+)(?:yuna|please)$/i, '').trimEnd();
+    if (rest === request) break;
+    request = rest;
+  }
+  return null;
+}
+
+/** Match the whole remaining instruction; quoted arguments stay data and every target/value must be present in this message. */
+function parseChoreInstruction(request: string): ChannelChoreRequest | null {
+  const create = /^(?:create|make|add)\s+(?:a\s+|an\s+)?(text channel|voice channel|channel|vc|category)\s+(?:(?:called|named)\s+)?(.+)$/i.exec(request);
   if (create) {
     const name = choreName(create[2]!); if (!name) return null;
     return { kind: 'create', channelType: create[1]!.toLowerCase() === 'category' ? 4 : /voice|vc/i.test(create[1]!) ? 2 : 0, name };
@@ -62,7 +82,8 @@ function choreTarget(value: string): string | null {
 export function validateChannelChore(operation: ChannelChoreOperation): void {
   invariant(operation && [0, 2, 4].includes(operation.channelType), 'Unsupported channel type');
   if (operation.kind === 'create') {
-    invariant(Object.keys(operation).length === 3 && choreName(`"${operation.name}"`) === operation.name, 'Invalid channel creation');
+    invariant(Object.keys(operation).length === (operation.parentId === undefined ? 3 : 4) && choreName(`"${operation.name}"`) === operation.name, 'Invalid channel creation');
+    if (operation.parentId != null) { assertDiscordId(operation.parentId); invariant(operation.channelType !== 4, 'Cannot nest categories'); }
     return;
   }
   invariant(operation.kind === 'modify' && Object.keys(operation).length === 6, 'Invalid channel operation');
@@ -70,6 +91,11 @@ export function validateChannelChore(operation: ChannelChoreOperation): void {
   if (operation.field === 'name') invariant(typeof operation.value === 'string' && choreName(`"${operation.value}"`) === operation.value, 'Invalid channel name');
   else if (operation.field === 'topic') invariant(operation.channelType === 0 && typeof operation.value === 'string' && operation.value.length <= 1024, 'Invalid channel topic');
   else if (operation.field === 'rate_limit_per_user') invariant(operation.channelType === 0 && Number.isInteger(operation.value) && Number(operation.value) >= 0 && Number(operation.value) <= 21600, 'Invalid slowmode');
+  else if (operation.field === 'parent_id') {
+    invariant(operation.channelType !== 4, 'Cannot nest categories');
+    if (operation.value !== null) assertDiscordId(operation.value as string);
+    if (operation.previous !== null) assertDiscordId(operation.previous as string);
+  }
   else invariant(operation.field === 'user_limit' && operation.channelType === 2 && Number.isInteger(operation.value) && Number(operation.value) >= 0 && Number(operation.value) <= 99, 'Invalid voice limit');
   invariant(operation.previous === null || typeof operation.previous === 'string' && operation.previous.length <= 1024
     || typeof operation.previous === 'number' && Number.isFinite(operation.previous), 'Invalid previous setting');

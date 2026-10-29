@@ -84,6 +84,8 @@ function harness() {
     async validateContextBindings() { return true; },
   } as unknown as IntakeService;
   const tasks = {
+    /** This timing fixture has no structured admin context; real payload retrieval is covered by PostgreSQL tests. */
+    async readInput() { return null; },
     /** Capture the service's task registration and expose its durable task ID. */
     registerTask() { return taskId; },
     /** Return fixture result references available for owner acceptance. */

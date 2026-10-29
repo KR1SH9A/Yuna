@@ -12,6 +12,7 @@ import type { ActionExecutionService } from '../../src/contexts/moderation/actio
 import type { MemoryService } from '../../src/contexts/memory/memory.service.js';
 import type { DebatePublicationService } from '../../src/contexts/debates/debate-publication.service.js';
 import type { AuditRecorder } from '../../src/platform/audit/audit.recorder.js';
+import type { ChannelChoreService } from '../../src/contexts/administration/channel-chore.service.js';
 
 /** Create existing serial loops without doing external I/O inside retention's privacy transaction. */
 export function startRecoveryHandlers(input: {
@@ -22,10 +23,17 @@ export function startRecoveryHandlers(input: {
   moderation: Pick<ModerationService, 'runRetention'>; actionExecution: Pick<ActionExecutionService, 'recoverDueActions'>;
   debates: Pick<DebateService, 'runRetention'>; debatePublication: Pick<DebatePublicationService, 'runMaintenance'>;
   audit: Pick<AuditRecorder, 'purgeExpired'>;
+  chores?: Pick<ChannelChoreService, 'runMaintenance' | 'cleanup'>;
 }): Promise<void>[] {
   const { signal: stop, orm, scope, administration, removal, tasks, conversation, delivery, memory,
     moderation, actionExecution, debates, debatePublication, audit } = input;
   return [
+    runBackgroundLoop({ signal: stop, intervalMs: 5_000,
+      /** Resume undispatched admin requests and reconcile unknown writes without repeating them. */
+      async run() { await input.chores?.runMaintenance(stop); },
+      /** Keep user text and external errors out of operational logs. */
+      onError: () => console.warn('bot: channel chore recovery deferred.'),
+    }),
     runBackgroundLoop({ signal: stop, intervalMs: 5_000,
       /** Publish accepted Debate summaries once and reconcile uncertain sends without resending them. */
       async run() { await debatePublication.runMaintenance(stop); },
@@ -57,6 +65,7 @@ export function startRecoveryHandlers(input: {
         await memory.runRetention();
         await orm.em.fork().transactional(async em => {
           await administration.lockPrivacy(em, scope);
+          await input.chores?.cleanup(em, new Date());
           await moderation.runRetention(em, new Date());
           await debates.runRetention(em, new Date());
           await audit.purgeExpired(em, scope);

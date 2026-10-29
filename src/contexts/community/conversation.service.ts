@@ -1,4 +1,7 @@
 /** Admit bounded Discord requests and atomically accept current generation results for delivery. */
+import { parseAdminResponse, type AdminAssistantContext } from '../../ai/contracts/admin-assistant.contracts.js';
+import type { ChannelChoreOperation } from '../../discord/channel-chore.contracts.js';
+import type { ChannelChoreService } from '../administration/channel-chore.service.js';
 import { ReplyPolicy } from './reply.policy.js';
 import { prepareChatContext } from '../../ai/contracts/chat-context.js';
 import { IntakeEvent } from '../../platform/intake/entities/intake-event.entity.js';
@@ -17,9 +20,10 @@ import type { MessageReference, NormalizedConversationMessage } from '../../disc
 import { noLatencyReporter, reportLatency, type LatencyReporter, type LatencySample } from '../../platform/runtime/latency.js';
 import { assertDiscordId, invariant } from '../../platform/db/entity-values.js';
 
-/** Text-only Community workflow. External reads/sends happen outside these short transactions. */
+/** Conversation generation and admin-plan acceptance; all external reads/sends stay outside owner transactions. */
 export class ConversationService {
   private knowledge: KnowledgeService | undefined;
+  private adminAssistant: ChannelChoreService | undefined;
   /** Compose the durable conversation owner; optional knowledge is attached once before ingress starts. */
   constructor(
     private readonly orm: MikroORM, readonly scope: InstallationScope, private readonly model: string,
@@ -27,6 +31,22 @@ export class ConversationService {
     private readonly tasks: TaskService,
     private readonly latency: LatencyReporter = noLatencyReporter,
   ) {}
+
+  /** Attach the authenticated admin action owner before ingress begins. */
+  setAdminAssistant(service: ChannelChoreService): void {
+    invariant(!this.adminAssistant, 'Admin assistant already configured'); this.adminAssistant = service;
+    service.setPlanValidator((em, id) => this.validateAdminPlan(em, id));
+  }
+
+  /** The action owner calls this inside its installation lock immediately before a planned Discord write. */
+  async validateAdminPlan(em: EntityManager, requestId: string): Promise<boolean> {
+    invariant(em.isInTransaction(), 'Plan validation requires the owner transaction');
+    const request = await em.findOne(ConversationRequest, { ...this.scope, id: requestId });
+    if (!request || request.stage !== 'accepted' || request.canceledAt || request.payloadPurgedAt || request.deadline <= new Date()) return false;
+    const settings = await em.findOne(ChannelReplySettings, { ...this.scope, channelId: request.sourceChannelId });
+    return settings?.mode === 'direct' && settings.rowRevision === request.settingsRevision
+      && this.intake.validateContextBindings(em, this.scope, request.contextBindings);
+  }
 
   /** Wire the same-installation knowledge owner once, resolving its pending-use invalidation callback without a framework. */
   setKnowledgeService(knowledge: KnowledgeService): void {
@@ -78,6 +98,9 @@ export class ConversationService {
     if (!ReplyPolicy.shouldConsiderReply(input, this.scope.guildId, 'direct', now)) return 'ignored';
     const context = input.chatContext ? prepareChatContext(input.chatContext) : undefined;
     invariant(!context || (context.guildId === input.guildId && context.channelId === input.channelId && context.sourceMessageId === input.messageId), 'Context belongs to another source');
+    let adminContext = await this.adminAssistant?.readPlanningContext(input);
+    if (adminContext && JSON.stringify(adminContext).length + input.text.length > 5500) adminContext = undefined;
+    const previousReply = adminContext ? undefined : input.previousReply;
     const result = await this.orm.em.fork().transactional(async em => {
       const admission = await this.administration.lockAdmission(em, this.scope);
       if (!admission) return 'ignored';
@@ -95,10 +118,10 @@ export class ConversationService {
       const observation = await this.intake.receiveInput(em, this.scope, input, now, deadline, purgeAfter, metadataPurgeAfter);
       if (!observation) return 'duplicate';
       // Honor channel limits without cutting an individual message or claiming a complete directory.
-      const selectedContext = context ? { ...context, messages: context.messages.slice(-Math.min(8, settings.limits.maxContextMessages)),
+      const selectedContext = context ? { ...context, messages: context.messages.filter(message => !adminContext || message.authorId === input.authorId && !message.isYuna).slice(-Math.min(8, settings.limits.maxContextMessages)),
         publicChannels: [...context.publicChannels] } : undefined;
       if (selectedContext && settings.limits.maxContextMessages === 0) selectedContext.messages = [];
-      const contextBudget = Math.min(6000, settings.limits.maxContextCharacters) - input.text.length - (input.previousReply?.length ?? 0);
+      const contextBudget = Math.min(6000, settings.limits.maxContextCharacters) - input.text.length - (previousReply?.length ?? 0) - (adminContext ? JSON.stringify(adminContext).length : 0);
       if (selectedContext) {
         while (JSON.stringify(selectedContext).length > contextBudget && selectedContext.messages.length) selectedContext.messages = selectedContext.messages.slice(1);
         while (JSON.stringify(selectedContext).length > contextBudget && selectedContext.publicChannels.length) {
@@ -108,9 +131,9 @@ export class ConversationService {
       const chat = selectedContext && JSON.stringify(selectedContext).length <= contextBudget
         ? await this.intake.bindChatContext(em, this.scope, selectedContext, now, { purgeAfter, metadataPurgeAfter }) : undefined;
       const audience: AudienceBinding = { schemaVersion: 1, visibility: 'channel', channelId: input.channelId, requesterUserId: input.authorId, revision: 1 };
-      const visible = await this.knowledge?.findVisibleEntries(em, { search: input.text, entryIds: settings.approvedKnowledgeScope.entryIds }, audience, new Date()) ?? [];
+      const visible = adminContext ? [] : await this.knowledge?.findVisibleEntries(em, { search: input.text, entryIds: settings.approvedKnowledgeScope.entryIds }, audience, new Date()) ?? [];
       // Keep the same total bound; current chat and approved knowledge share the remaining capacity.
-      let remaining = Math.min(6_000, settings.limits.maxContextCharacters) - input.text.length - (input.previousReply?.length ?? 0)
+      let remaining = Math.min(6_000, settings.limits.maxContextCharacters) - input.text.length - (previousReply?.length ?? 0) - (adminContext ? JSON.stringify(adminContext).length : 0)
         - (chat ? JSON.stringify(chat.context).length : 0);
       const selected = visible.filter(entry => {
         if (!entry.content || entry.content.length > remaining) return false;
@@ -123,7 +146,7 @@ export class ConversationService {
           ...selected.map(entry => ({ owner: 'knowledge' as const, recordId: entry.entryId, revision: entry.rowRevision, contentHash: entry.contentHash }))],
         audienceBinding: audience, deadline, purgeAfter });
       const taskId = this.tasks.registerTask(em, { ...this.scope, requestId: request.id,
-        input: { text: input.text, ...(input.previousReply ? { previousReply: input.previousReply } : {}), maxOutputTokens: 512,
+        input: { text: input.text, ...(previousReply ? { previousReply } : {}), ...(adminContext ? { adminContext } : {}), maxOutputTokens: adminContext ? 1024 : 512,
           ...(chat ? { chatContext: chat.context } : {}),
           ...(selected.length ? { approvedKnowledge: selected.map(entry => ({ entryId: entry.entryId, content: entry.content!, contentHash: entry.contentHash, revision: entry.rowRevision })) } : {}) },
         ...(selected.length ? { knowledgeChannelId: input.channelId } : {}),
@@ -171,27 +194,48 @@ export class ConversationService {
   /** Copy valid terminal output into owner storage and acknowledge acceptance atomically. */
   async acceptReplyResults(): Promise<number> {
     const started = performance.now();
+    // Native Discord preflight happens outside locks; every local binding is checked again in acceptance below.
+    const candidates = await this.tasks.pendingResults(this.orm.em.fork(), this.scope, 20);
+    const plans = new Map<string, { text: string | undefined; context?: AdminAssistantContext; operation?: ChannelChoreOperation }>();
+    for (const completion of candidates) {
+      const input = await this.tasks.readInput(this.orm.em.fork(), this.scope, completion.taskId);
+      let text = completion.payload?.text;
+      if (!input?.adminContext) { plans.set(completion.resultId, { text }); continue; }
+      const response = completion.outcome === 'success' && !completion.payload?.truncated && text
+        ? parseAdminResponse(text, input.adminContext, input.text) : null;
+      const request = await this.orm.em.fork().findOne(ConversationRequest, { ...this.scope, id: completion.requestId });
+      const source = request?.contextBindings?.find(binding => binding.owner === 'intake' && binding.recordId === completion.sourceEventId);
+      const operation = response?.type === 'action' && source && this.adminAssistant
+        ? await this.adminAssistant.preparePlan(input.adminContext, response.intent, source.contentHash) : null;
+      text = response?.type === 'reply' || response?.type === 'clarify' ? response.text
+        : operation ? 'Preparing the requested channel change.' : 'I couldn’t resolve or authorize that change. Check the channel and my Manage Channels permission, then try again.';
+      plans.set(completion.resultId, { text, context: input.adminContext, ...(operation ? { operation } : {}) });
+    }
     const result = await this.orm.em.fork().transactional(async em => {
       const admission = await this.administration.lockAdmission(em, this.scope, 'continuation');
       const completions = await this.tasks.pendingResults(em, this.scope, 20);
       let accepted = 0;
       const samples: LatencySample[] = [];
       for (const completion of completions) {
+        const plan = plans.get(completion.resultId); if (!plan) continue;
         const now = new Date();
         const source = await this.intake.current(em, this.scope, completion.sourceEventId, completion.sourceRevision);
         const request = await em.findOne(ConversationRequest, { ...this.scope, id: completion.requestId }, { lockMode: LockMode.PESSIMISTIC_WRITE });
         const settings = request ? await em.findOne(ChannelReplySettings, { ...this.scope, channelId: request.sourceChannelId }) : null;
-        const text = completion.payload?.text;
+        const text = plan.text;
         const knowledgeCurrent = !request?.contextBindings?.some(binding => binding.owner === 'knowledge')
           || Boolean(this.knowledge && await this.knowledge.validateBindings(em, request.contextBindings, request.audienceBinding, now));
         const contextCurrent = request && await this.intake.validateContextBindings(em, this.scope, request.contextBindings);
         const valid = admission && admission.safetyRevision === completion.safetyRevision && source && request && settings?.mode === 'direct' && settings.rowRevision === request.settingsRevision
           && request.stage === 'generating' && request.expectedTaskId === completion.taskId && !request.canceledAt && request.deadline > now && !request.payloadPurgedAt
           && contextCurrent && knowledgeCurrent && ReplyPolicy.validateAudience(request.audienceBinding, request.sourceChannelId)
-          && completion.outcome === 'success' && ReplyPolicy.validateReply(text);
+          && completion.outcome === 'success' && ReplyPolicy.validateReply(text)
+          && await this.tasks.isResultCurrent(em, this.scope, completion.resultId, admission.safetyRevision);
         if (valid && request) {
           request.acceptReply({ taskId: completion.taskId, resultId: completion.resultId, sourceVersion: completion.sourceRevision, cancellationGeneration: request.cancellationGeneration, expectedRowRevision: request.rowRevision, at: now });
-          em.persist(new ReplyDelivery({ ...this.scope, createdAt: now, requestId: request.id, acceptedResultReference: completion.resultId, acceptedContent: text!, supportingReferences: request.contextBindings ?? [],
+          if (plan.operation && plan.context && this.adminAssistant) {
+            await this.adminAssistant.acceptPlan(em, request, completion, plan.context, plan.operation, source.hash, now);
+          } else em.persist(new ReplyDelivery({ ...this.scope, createdAt: now, requestId: request.id, acceptedResultReference: completion.resultId, acceptedContent: text!, supportingReferences: request.contextBindings ?? [],
             allowedMentions: { users: [], roles: [], everyone: false, repliedUser: false },
             destination: { transport: 'channel_message', channelId: request.sourceChannelId, replyMessageId: request.sourceMessageId, nonce: request.sourceMessageId!, enforceNonce: true },
             sourceVersion: request.sourceVersion, privacyRevision: 0, audienceBinding: request.audienceBinding, deadline: request.deadline, purgeAfter: request.purgeAfter, maxAttempts: 1 }));

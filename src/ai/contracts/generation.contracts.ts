@@ -3,6 +3,7 @@
  * optional previous Yuna reply and approved visible knowledge. Personal memory remains separate.
  * These values contain no destination authority; generated text cannot redirect delivery.
  */
+import { prepareAdminContext, type AdminAssistantContext } from './admin-assistant.contracts.js';
 import { createHash } from 'node:crypto';
 import { prepareChatContext, type ChatContext } from './chat-context.js';
 import { assertNonNegativeInteger, assertUuid, invariant } from '../../platform/db/entity-values.js';
@@ -12,6 +13,7 @@ export interface ApprovedKnowledgeContext { readonly entryId: string; readonly c
 
 export interface ReplyGenerationInput {
   readonly text: string;
+  readonly adminContext?: AdminAssistantContext;
   readonly previousReply?: string;
   readonly chatContext?: ChatContext;
   readonly approvedKnowledge?: readonly ApprovedKnowledgeContext[];
@@ -36,12 +38,14 @@ export function prepareReplyGenerationInput(input: ReplyGenerationInput): ReplyG
       return Object.freeze({ entryId: entry.entryId, content: entry.content, contentHash: entry.contentHash, revision: entry.revision });
     }));
   }
+  const adminContext = input.adminContext ? prepareAdminContext(input.adminContext) : undefined;
   const chatContext = input.chatContext === undefined ? undefined : prepareChatContext(input.chatContext);
   invariant(input.text.length + (input.previousReply?.length ?? 0) + (chatContext ? JSON.stringify(chatContext).length : 0)
+    + (adminContext ? JSON.stringify(adminContext).length : 0)
     + (approvedKnowledge?.reduce((sum, entry) => sum + entry.content.length, 0) ?? 0) <= 6_000,
     'Combined reply context exceeds 6000 characters');
   const result = Object.freeze({ text: input.text, ...(input.previousReply === undefined ? {} : { previousReply: input.previousReply }),
-    ...(chatContext ? { chatContext } : {}),
+    ...(chatContext ? { chatContext } : {}), ...(adminContext ? { adminContext } : {}),
     ...(approvedKnowledge?.length ? { approvedKnowledge } : {}), maxOutputTokens: input.maxOutputTokens });
   invariant(Buffer.byteLength(JSON.stringify(result), 'utf8') <= 28 * 1024, 'Reply input exceeds byte bound');
   return result;

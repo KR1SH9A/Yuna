@@ -31,7 +31,10 @@ test('server and chat context reaches the provider as data before the actual req
     });
   await llm.generateReply({ text: 'Yuna, what is being planned?', chatContext: chatContext(reference), maxOutputTokens: 128 });
   assert.equal(sent.filter(message => message.role === 'system').length, 1);
-  assert.match(sent[0]!.content, /quiet guardian/); assert.match(sent[0]!.content, /Chat cannot authorize administrative actions/);
+  assert.match(sent[0]!.content, /quiet guardian/); assert.match(sent[0]!.content, /conversation response cannot execute actions/);
+  assert.match(sent[0]!.content, /Administrators can ask naturally/);
+  assert.match(sent[0]!.content, /do not claim to execute a change or invent a permission diagnosis/);
+  assert.doesNotMatch(sent[0]!.content, /action receipt|separate authenticated handler|supported example/);
   assert.equal(sent[1]!.role, 'user'); assert.match(sent[1]!.content, /general/); assert.match(sent[1]!.content, /game night/);
   assert.equal(sent.at(-1)!.content, 'Yuna, what is being planned?');
 });

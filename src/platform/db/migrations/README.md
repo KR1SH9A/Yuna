@@ -23,4 +23,8 @@ Use `npm run schema:sql` for model/schema review; it includes the additional con
 9. `009-debates.sql` activates consented Debate storage and restricted assessment routes, frozen transcript/rubric bindings, exact accounting and revocation-aware recovery.
 10. `010-chat-context.sql` checks every selected current chat message at conversation claim/disclosure/start and keeps same-channel scope distinct from original moderation evidence. It upgrades only the old default context-message limit from one to eight, advancing the channel revision; custom limits remain intact.
 
+11. `011-channel-chores.sql` adds the bot-only Administration channel-chore ledger: exact source identity, one committed dispatch attempt, explicit unknown outcomes, bounded retention and replay metadata. It adds no worker privileges.
+
+12. `012-admin-planning.sql` binds AI-planned chores to the exact conversation and result, retaining the provenance graph until chore cleanup. Existing runtime table privileges cover its additive columns; no worker privileges are added.
+
 The new migrations in this change set have not been deployed by this task. The previously present migrations 1–3 retain their original contents. The schema printer remains an entity review tool; the deployment runner also owns platform-only tables such as personal usage preferences.

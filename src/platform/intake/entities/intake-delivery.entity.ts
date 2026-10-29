@@ -3,7 +3,7 @@ import { Check, Entity, Index, Property, Unique } from '@mikro-orm/decorators/le
 import { ScopedEntity } from '../../db/base.entity.js';
 import { assertDate, assertUuid, invariant, type ScopedEntityInput } from '../../db/entity-values.js';
 
-export type IntakeOwner = 'moderation' | 'community' | 'memory' | 'debates';
+export type IntakeOwner = 'moderation' | 'community' | 'memory' | 'debates' | 'administration';
 export type IntakeOutcome = 'handled' | 'ignored' | 'expired' | 'failed';
 export type IntakeDeliveryState = 'READY' | 'RUNNING' | 'RETRY_WAIT' | 'PARKED' | 'DONE';
 export interface IntakeDeliveryInput extends ScopedEntityInput {

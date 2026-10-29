@@ -20,6 +20,7 @@ import { createLatencyLogger } from '../../src/platform/runtime/latency.js';
 import { AuthorityService } from '../../src/contexts/administration/authority.service.js';
 import { SafetyService } from '../../src/contexts/administration/safety.service.js';
 import { ConfigurationService } from '../../src/contexts/administration/configuration.service.js';
+import { ChannelChoreService } from '../../src/contexts/administration/channel-chore.service.js';
 import { RemovalService } from '../../src/contexts/administration/removal.service.js';
 import { prepareServerConfiguration } from './moderation-setup.handlers.js';
 import { handleAdministrationCommand, type AdministrationCommands } from './discord.handlers.js';
@@ -48,6 +49,7 @@ export function createBotResources(config: BotRuntimeConfig): readonly RuntimeRe
   let moderation: ModerationService | undefined;
   let moderationWorkflow: ModerationWorkflowService | undefined;
   let actionExecution: ActionExecutionService | undefined;
+  let chores: ChannelChoreService | undefined;
   let accepting = false;
   let policyReady = false;
   const pending = new Set<Promise<unknown>>();
@@ -101,6 +103,7 @@ export function createBotResources(config: BotRuntimeConfig): readonly RuntimeRe
     async start(signal) {
       // Validate the file before admitting traffic; applying it still requires an authenticated command.
       const configuredPolicy = await loadPolicyConfig(config.policyFile);
+      if (!discord.jevModel) console.warn('bot: automatic moderation setup is unavailable because JEV_MODEL is missing from the bot environment. Match the worker JEV_MODEL, restart, then run /yuna setup.');
       invariant(configuredPolicy.features?.debates !== true || discord.jevModel !== undefined,
         'Enabled Debates require JEV_MODEL in the bot environment');
       const orm = database.getOrm();
@@ -131,6 +134,8 @@ export function createBotResources(config: BotRuntimeConfig): readonly RuntimeRe
       const debates = new DebateService(orm, scope, administration, discord.jevModel ?? 'unavailable');
       const debatePublication = new DebatePublicationService(orm, scope, administration, debates, gateway.createDebateTransport());
       const audit = new AuditRecorder();
+      chores = new ChannelChoreService(orm, scope, administration, intake, gateway.createChannelChoreTransport(), gateway);
+      conversation.setAdminAssistant(chores);
       actionExecution = new ActionExecutionService(orm, scope, authority, safety, administration, gateway.createModerationTransport());
       const configuration = new ConfigurationService(orm, authority, discord.replyModel, {
         availableFeatures: discord.jevModel ? ['memory', 'debates'] : ['memory'],
@@ -146,6 +151,10 @@ export function createBotResources(config: BotRuntimeConfig): readonly RuntimeRe
         publishModerationPolicy: (em, caller, settings, at) => moderation!.publishPolicy(em, caller, settings, at),
       });
       removal = new RemovalService(orm, scope, authority, {
+        channel_chores: { /** Erase pending payloads while the installation removal lock fences new writes. */
+          async invalidate(em, at) { await chores!.cleanup(em, at, true); },
+          /** Preserve explicit uncertain-attempt receipts without retaining channel names or topics. */
+          cleanup: (em, at) => chores!.cleanup(em, at, true) },
         debates: { /** Removal state fences new Debate work; cleanup invalidates retained transcripts and prepared copies. */
           async invalidate(em, at) { await debates.cleanupForRemoval(em, at); },
           /** Erase Debate payloads while preserving explicit consent and uncertain-publication receipts. */
@@ -196,7 +205,7 @@ export function createBotResources(config: BotRuntimeConfig): readonly RuntimeRe
       running = [
         ...startCompletionHandlers({ signal: stop, wakeup, conversation, delivery, moderationWorkflow, debates }),
         ...startRecoveryHandlers({ signal: stop, orm, scope, administration, removal, tasks, conversation, delivery,
-          memory, moderation, actionExecution, debates, debatePublication, audit }),
+          memory, moderation, actionExecution, debates, debatePublication, audit, chores }),
       ];
     },
     /** Close ingress, cancel background loops and drain callbacks before recording the installation unavailable. */

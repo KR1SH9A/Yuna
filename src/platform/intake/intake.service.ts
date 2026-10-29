@@ -130,7 +130,7 @@ export class IntakeService {
 
   /** Join caller admission transaction; a deletion tombstone wins over a late create. */
   async receiveInput(em: EntityManager, scope: InstallationScope, input: NormalizedConversationMessage, now: Date, deadline: Date, purgeAfter: Date,
-    metadataPurgeAfter = new Date(purgeAfter.getTime() + 6 * 86400_000)): Promise<{ eventId: string; revision: number; receipt: IntakeDelivery } | null> {
+    metadataPurgeAfter = new Date(purgeAfter.getTime() + 6 * 86400_000), owner: 'community' | 'administration' = 'community'): Promise<{ eventId: string; revision: number; receipt: IntakeDelivery } | null> {
     const sourceKey = `${input.channelId}:${input.messageId}`;
     const existing = await em.findOne(IntakeEvent, { installationId: scope.installationId, sourceKey }, { lockMode: LockMode.PESSIMISTIC_WRITE });
     if (existing) return null;
@@ -142,7 +142,7 @@ export class IntakeService {
       purgeAfter, metadataPurgeAfter,
     });
     event.markCurrent(1, 'present');
-    const receipt = new IntakeDelivery({ ...scope, createdAt: now, eventId: event.id, owner: 'community', orderKey: sourceKey, processingDeadline: deadline });
+    const receipt = new IntakeDelivery({ ...scope, createdAt: now, eventId: event.id, owner, orderKey: sourceKey, processingDeadline: deadline });
     receipt.claim('bot-admission', now, deadline, receipt.rowRevision);
     em.persist([event, receipt]);
     return { eventId: event.id, revision: event.sourceVersion, receipt };
@@ -233,6 +233,7 @@ export class IntakeService {
       and not exists (select 1 from prepared_input p where p.installation_id = e.installation_id and p.source_event_id = e.id)
       and not exists (select 1 from moderation_case c where c.installation_id = e.installation_id and c.original_event_id = e.id)
       and not exists (select 1 from evidence_revision v where v.installation_id = e.installation_id and v.original_event_id = e.id)
+      and not exists (select 1 from channel_chore c where c.installation_id = e.installation_id and c.source_event_id = e.id)
       order by e.id limit 50 for update of e`, [scope.installationId, scope.guildId, now]);
     for (const row of rows) {
       await em.nativeDelete(IntakeDelivery, { ...scope, eventId: row.id, state: 'DONE' });

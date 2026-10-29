@@ -14,6 +14,7 @@ export interface HealthSnapshot {
   unknownReplies: number;
   unknownActions: number;
   unresolvedCharges: number;
+  moderation: { enabled: boolean; admission: string | null; policyPublished: boolean; cases: number; pending: number; confirmedActions: number; failedActions: number };
   observedAt: string;
 }
 
@@ -21,9 +22,10 @@ export interface HealthSnapshot {
 export async function readHealthSnapshot(orm: MikroORM, guildId: string, signal: AbortSignal): Promise<HealthSnapshot> {
   assertDiscordId(guildId);
   const rows = await orm.em.fork().execute<{
+    moderation_enabled: boolean; moderation_admission: string | null; policy_published: boolean; cases: number; pending_cases: number; confirmed_actions: number; failed_actions: number;
     state: string | null; availability: string | null; owns: boolean; paused: boolean;
     queued: number; running: number; expired: number; unknown_replies: number; unknown_actions: number; unresolved: number; observed: Date;
-  }[]>(`with selected as(select id,state,discord_availability from public.guild_installation where guild_id=? order by generation desc limit 1)
+  }[]>(`with selected as(select id,state,discord_availability,feature_admission,operator_policy from public.guild_installation where guild_id=? order by generation desc limit 1)
     select i.state,i.discord_availability as availability,coalesce(s.paused,true) as paused,
       exists(select 1 from pg_catalog.pg_locks where locktype='advisory' and granted and objsubid=1
         and database=(select oid from pg_catalog.pg_database where datname=current_database())
@@ -34,6 +36,13 @@ export async function readHealthSnapshot(orm: MikroORM, guildId: string, signal:
       (select count(*)::integer from public.reply_delivery where installation_id=i.id and state='UNKNOWN') as unknown_replies,
       (select count(*)::integer from public.moderation_action where installation_id=i.id and state='UNKNOWN') as unknown_actions,
       (select count(*)::integer from public.usage_reservation where guild_id=? and state='liability') as unresolved,
+      coalesce((i.operator_policy->'moderation'->>'enabled')::boolean,false) as moderation_enabled,
+      i.feature_admission->>'moderation' as moderation_admission,
+      exists(select 1 from public.moderation_policy_revision where installation_id=i.id) as policy_published,
+      (select count(*)::integer from public.moderation_case where installation_id=i.id) as cases,
+      (select count(*)::integer from public.moderation_case where installation_id=i.id and workflow_phase<>'complete') as pending_cases,
+      (select count(*)::integer from public.moderation_action where installation_id=i.id and state='CONFIRMED') as confirmed_actions,
+      (select count(*)::integer from public.moderation_action where installation_id=i.id and state='FAILED') as failed_actions,
       clock_timestamp() as observed
     from (values(1)) anchor(x) left join selected i on true left join public.guild_safety_state s on s.installation_id=i.id`,
   [guildId, guildId, guildId], { signal });
@@ -41,5 +50,7 @@ export async function readHealthSnapshot(orm: MikroORM, guildId: string, signal:
   return { ready: row.state === 'active' && row.availability === 'available' && row.owns && !row.paused,
     installationState: row.state, discordAvailability: row.availability, botOwnsGuild: row.owns, paused: row.paused,
     queuedTasks: row.queued, runningTasks: row.running, expiredRunningTasks: row.expired, unknownReplies: row.unknown_replies,
-    unknownActions: row.unknown_actions, unresolvedCharges: row.unresolved, observedAt: new Date(row.observed).toISOString() };
+    unknownActions: row.unknown_actions,
+    moderation: { enabled: row.moderation_enabled, admission: row.moderation_admission, policyPublished: row.policy_published,
+      cases: row.cases, pending: row.pending_cases, confirmedActions: row.confirmed_actions, failedActions: row.failed_actions }, unresolvedCharges: row.unresolved, observedAt: new Date(row.observed).toISOString() };
 }

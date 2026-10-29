@@ -20,6 +20,7 @@ import { knowledgeCommandDefinition } from './knowledge-commands.js';
 import { memoryCommandDefinition } from './memory-commands.js';
 import { debateCommandDefinition } from './debate-commands.js';
 import { DiscordDebateTransport } from './debate-transport.js';
+import { DiscordChannelChoreTransport } from './channel-chore-transport.js';
 import {
   hashDiscordContent, normalizeConversationMessage, normalizeAdministrationCommand, normalizeOriginalMessage, type ConversationSourceSnapshot,
 } from './input-normalizer.js';
@@ -191,6 +192,12 @@ export class DiscordGateway implements RuntimeResource {
   /** Give Debate publication the same configured guild and no-retry REST lifecycle as other Discord effects. */
   createDebateTransport(): DiscordDebateTransport {
     return new DiscordDebateTransport(this.#options.guildId, () => this.#client, () => this.#botUserId,
+      () => this.#available && !this.#stopping, this.#abort.signal);
+  }
+
+  /** Channel chores share the authenticated no-retry client and current native-fact reader. */
+  createChannelChoreTransport(): DiscordChannelChoreTransport {
+    return new DiscordChannelChoreTransport(() => this.#client, this.stateReader,
       () => this.#available && !this.#stopping, this.#abort.signal);
   }
 

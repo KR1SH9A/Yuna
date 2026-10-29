@@ -121,6 +121,7 @@ test('health distinguishes a live ownership session from stale available state w
   try {
     await ownership.start(signal);
     const online = await readHealthSnapshot(f.bot, f.scope.guildId, signal);
+    assert.deepEqual(online.moderation, { enabled: false, admission: 'disabled', policyPublished: false, cases: 0, pending: 0, confirmedActions: 0, failedActions: 0 });
     assert.equal(online.ready, true); assert.equal(online.botOwnsGuild, true);
     await f.lifecycle.recordAvailability(f.scope, false);
     assert.equal((await readHealthSnapshot(f.bot, f.scope.guildId, signal)).ready, false);

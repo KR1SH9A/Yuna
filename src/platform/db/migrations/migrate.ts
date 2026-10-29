@@ -29,7 +29,7 @@ const enabledTables = ['guild_installation', 'guild_safety_state', 'capability_g
   'memory_scope', 'memory_fact', 'memory_deletion_request', 'debate_session', 'participant_consent', 'transcript_entry', 'transcript_snapshot', 'rubric_revision', 'debate_evaluation',
   'moderation_case', 'moderation_policy_revision', 'evidence_revision', 'moderation_finding', 'moderation_action', 'moderation_action_finding', 'action_attempt', 'target_execution_state',
   'intake_event', 'intake_delivery', 'conversation_request', 'reply_delivery', 'ai_task', 'prepared_input',
-  'task_attempt', 'task_result', 'task_acceptance', 'outbox_entry', 'usage_reservation', 'usage_entry'];
+  'task_attempt', 'task_result', 'task_acceptance', 'outbox_entry', 'usage_reservation', 'usage_entry', 'channel_chore'];
 
 /** Load reviewed SQL beside source, or from the repository when running emitted dist JavaScript. */
 async function readMigration(name: string): Promise<string> {
@@ -142,7 +142,7 @@ export async function prepareDatabase(config: DatabasePreparationConfig): Promis
   const url = validateConfiguration(config);
   let orm: MikroORM | undefined;
   try {
-    const names = ['001-core.sql', 'conversation-worker.sql', '003-conversation-notifications.sql', '004-operating-controls.sql', '005-moderation-worker.sql', '006-user-quotas.sql', '007-knowledge-context.sql', '008-memory.sql', '009-debates.sql', '010-chat-context.sql'];
+    const names = ['001-core.sql', 'conversation-worker.sql', '003-conversation-notifications.sql', '004-operating-controls.sql', '005-moderation-worker.sql', '006-user-quotas.sql', '007-knowledge-context.sql', '008-memory.sql', '009-debates.sql', '010-chat-context.sql', '011-channel-chores.sql', '012-admin-planning.sql'];
     const migrations = await Promise.all(names.map(async (name, index) => {
       const sql = await readMigration(name);
       return { version: index + 1, name, sql, checksum: createHash('sha256').update(sql).digest('hex') };
@@ -199,7 +199,7 @@ export async function prepareDatabase(config: DatabasePreparationConfig): Promis
       const ownership = await em.execute<{ name: string; owner: string }[]>(`select c.relname as name,
         pg_catalog.pg_get_userbyid(c.relowner) as owner from pg_catalog.pg_class c join pg_catalog.pg_namespace n
         on n.oid=c.relnamespace where n.nspname='public' and c.relkind='r'`);
-      for (const table of [...coreTables, 'user_usage_limit', 'memory_scope', 'memory_fact', 'memory_deletion_request', 'debate_session', 'participant_consent', 'transcript_entry', 'transcript_snapshot', 'rubric_revision', 'debate_evaluation', 'yuna_schema_migrations']) {
+      for (const table of [...coreTables, 'user_usage_limit', 'memory_scope', 'memory_fact', 'memory_deletion_request', 'debate_session', 'participant_consent', 'transcript_entry', 'transcript_snapshot', 'rubric_revision', 'debate_evaluation', 'channel_chore', 'yuna_schema_migrations']) {
         if (ownership.find(row => row.name === table)?.owner !== selected.administrator) throw new DatabasePreparationError('unsafe_administrator');
         await em.execute(`revoke all on table public."${table}" from public,yuna_bot,yuna_worker`);
       }

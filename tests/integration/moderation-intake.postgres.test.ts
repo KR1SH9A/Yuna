@@ -4,7 +4,7 @@ import { beforeAll, afterAll, test } from '@jest/globals';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { LockMode, type FlushEventArgs } from '@mikro-orm/core';
 import { entityOrmConfig } from '../../src/platform/db/mikro-orm.config.js';
-import { createEntitySchemaSql } from '../../src/platform/db/schema-constraints.js';
+import { prepareDatabase } from '../../src/platform/db/migrations/migrate.js';
 import { temporaryPostgres } from '../helpers/temporary-postgres.js';
 import { GuildLifecycleService, type InstallationScope } from '../../src/contexts/administration/guild-lifecycle.service.js';
 import { GuildInstallation } from '../../src/contexts/administration/entities/guild-installation.entity.js';
@@ -22,8 +22,10 @@ import type { JsonObject } from '../../src/platform/db/entity-values.js';
 let database: ReturnType<typeof temporaryPostgres>, orm: MikroORM;
 let sequence = 1000;
 beforeAll(async () => {
-  database = temporaryPostgres(); orm = new MikroORM({ ...entityOrmConfig(), ...database.options });
-  await orm.connect(); database.applySchema(await createEntitySchemaSql(orm));
+  database = temporaryPostgres();
+  const url = new URL('postgresql://yuna_test@localhost:55432/postgres'); url.searchParams.set('host', database.options.host);
+  await prepareDatabase({ adminDatabaseUrl: url.href, botDatabasePassword: 'intake-bot', workerDatabasePassword: 'intake-worker' });
+  orm = new MikroORM({ ...entityOrmConfig(), ...database.options }); await orm.connect();
 }, 60_000);
 afterAll(async () => { if (orm) await orm.close(true); database?.close(); }, 30_000);
 

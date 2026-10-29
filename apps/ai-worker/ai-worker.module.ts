@@ -37,6 +37,7 @@ export function createWorkerResources(config: WorkerRuntimeConfig): readonly Run
       const llm = new LlmService(config.deepseek, config.requestTimeoutMs);
       const moderationStore = new ModerationWorkerStore(orm);
       const jev = config.jev.mode === 'disabled' ? null : new JevService(config.jev, config.requestTimeoutMs);
+      if (!jev) console.warn('ai-worker: automatic moderation is OFF because JEV_MODE=disabled. Set JEV_MODE=live and configure OPENROUTER_API_KEY and JEV_MODEL to enable assessment.');
       if (jev) {
         const grants = await orm.em.fork().execute<{ allowed: boolean }[]>(
           "select has_function_privilege(current_user, 'public.yuna_moderation_claim(text,text,text)', 'EXECUTE') and has_function_privilege(current_user, 'public.yuna_debate_claim(text,text)', 'EXECUTE') as allowed");

@@ -44,6 +44,7 @@ export class TaskService {
     const scope = { installationId: input.installationId, guildId: input.guildId, createdAt: input.now };
     const payload = {
       text: prepared.text,
+      ...(prepared.adminContext ? { adminContext: prepared.adminContext as unknown as JsonObject } : {}),
       ...(prepared.previousReply === undefined ? {} : { previousReply: prepared.previousReply }),
       ...(prepared.chatContext ? { chatContext: prepared.chatContext as unknown as JsonObject } : {}),
       ...(prepared.approvedKnowledge?.length ? { approvedKnowledge: prepared.approvedKnowledge.map(entry => ({ ...entry })) } : {}),
@@ -98,6 +99,13 @@ export class TaskService {
       where t.installation_id=? and t.guild_id=? and t.owner='community' and t.kind='community.generate'
         and not exists(select 1 from public.task_acceptance a where a.result_id=r.id)
       order by r.completed_at,r.id limit ?`, [scope.installationId, scope.guildId, limit]);
+  }
+
+  /** Read the immutable owner-prepared payload for external preflight; acceptance must still recheck its live task and source gates. */
+  async readInput(em: EntityManager, scope: ConversationTaskScope, taskId: string): Promise<ReplyGenerationInput | null> {
+    const input = await em.findOne(PreparedInput, { ...scope, taskId, payloadPurgedAt: null });
+    if (!input?.payload || !input.expiresAt || input.expiresAt <= new Date()) return null;
+    try { return prepareReplyGenerationInput(input.payload as unknown as ReplyGenerationInput); } catch { return null; }
   }
 
   /** The owner holds admission locked; accepted content still binds to its generation's safety epoch. */
@@ -200,7 +208,7 @@ export class TaskService {
         || !await em.findOne(TaskAcceptance, { ...scope, resultId: result.id })) return false;
       // A future cross-owner binding keeps the graph alive until that owner releases it.
       const references = await em.execute<{ present: boolean }[]>(`select exists(select 1 from moderation_case where expected_task_id=?)
-        or exists(select 1 from moderation_finding where observation_task_result_id=? or assessment_task_result_id=?) as present`, [task.id, result.id, result.id]);
+        or exists(select 1 from moderation_finding where observation_task_result_id=? or assessment_task_result_id=?) or exists(select 1 from channel_chore where planning_result_id=?) as present`, [task.id, result.id, result.id, result.id]);
       if (references[0]?.present || !await this.usage.purgeTaskAccounting(em, scope, task.id, now)) return false;
       await em.execute('delete from task_acceptance where installation_id=? and guild_id=? and task_id=?', [scope.installationId, scope.guildId, task.id]);
       await em.execute('delete from task_result where installation_id=? and guild_id=? and task_id=?', [scope.installationId, scope.guildId, task.id]);
